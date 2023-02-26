@@ -1,18 +1,20 @@
 extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
-use regex_syntax::Parser;
 use syn::ItemEnum;
 use syn::{self, Attribute};
 
-use crate::finite_automaton::FiniteAutomaton;
-
 mod finite_automaton;
+mod lexer;
+
+use crate::lexer::*;
 
 #[proc_macro_derive(Langen, attributes(token))]
 pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
     let base_enum: ItemEnum = syn::parse(input).expect("Langen must be applied to an enum");
     let name = base_enum.ident;
+
+    let mut tokens = Vec::new();
 
     for variant in &base_enum.variants {
         for attrib in &variant.attrs {
@@ -24,26 +26,17 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                             variant.ident
                         )
                     });
-                    let nfa = FiniteAutomaton::from_regex(
-                        &Parser::new().parse(&regex).unwrap_or_else(|_| {
-                            panic!(
-                                "Invalid invalid regex \"{}\" for token \"{}\"",
-                                regex, variant.ident
-                            )
-                        }),
-                    )
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "Couldnt parse regex \"{}\" for token \"{}\"",
-                            regex, variant.ident
-                        )
-                    });
-                    println!("{}\n", nfa);
+                    tokens.push(TokenVariant {
+                        name: variant.ident.clone(),
+                        regex,
+                    })
                 }
                 _ => continue,
             }
         }
     }
+
+    println!("{}", create_nfa(tokens));
 
     let gen = quote! {
         impl #name {
