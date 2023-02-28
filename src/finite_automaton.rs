@@ -1,3 +1,4 @@
+use std::cmp::min;
 use std::fmt;
 
 use regex_syntax::hir::Hir;
@@ -10,6 +11,7 @@ pub struct StateTransition {
     pub to_state: u32,
 }
 
+#[derive(Clone)]
 pub struct EndState {
     pub state: u32,
     pub token: Option<Ident>,
@@ -29,6 +31,8 @@ pub struct FiniteAutomaton {
 }
 
 impl FiniteAutomaton {
+    /// Converts a regex to an nfa using Thompson's construction
+    /// For regex ranges (for example [a-z] or .) only ascii characters are allowed
     pub fn from_regex(regex: &Hir) -> Option<Self> {
         match regex.kind() {
             HirKind::Empty => Some(Self {
@@ -55,7 +59,9 @@ impl FiniteAutomaton {
                     transitions: vec![],
                 };
                 for range in class.iter() {
-                    for item in range.start()..=range.end() {
+                    let start = min(range.end(), char::from_u32(127).unwrap());
+                    let end = min(range.end(), char::from_u32(127).unwrap());
+                    for item in start..=end {
                         result.transitions.push(StateTransition {
                             from_state: 0,
                             transition: Some(item),
@@ -174,7 +180,7 @@ impl FiniteAutomaton {
                 let mut result = Self {
                     num_states: 4,
                     start_state: 0,
-                    end_states: vec![EndState::new(1)],
+                    end_states: vec![EndState::new(3)],
                     transitions: vec![
                         StateTransition {
                             from_state: 0,

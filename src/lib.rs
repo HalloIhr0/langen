@@ -36,7 +36,7 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
         }
     }
 
-    println!("{}", create_nfa(tokens));
+    println!("{}", create_finite_automaton(tokens));
 
     let gen = quote! {
         impl #name {
