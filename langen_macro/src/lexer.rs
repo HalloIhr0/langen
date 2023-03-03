@@ -13,7 +13,6 @@ pub struct TokenVariant {
 pub fn create_finite_automaton(tokens: Vec<TokenVariant>) -> FiniteAutomaton {
     let nfa = create_nfa(&tokens);
     let dfa = convert_nfa_to_dfa(&nfa, &tokens);
-    println!("{} {}", nfa.num_states, dfa.num_states);
     dfa
 }
 

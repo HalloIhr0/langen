@@ -6,6 +6,7 @@ use syn::{self, Attribute};
 
 mod finite_automaton;
 mod lexer;
+mod codegen;
 
 use crate::lexer::*;
 
@@ -36,13 +37,12 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
         }
     }
 
-    println!("{}", create_finite_automaton(tokens));
+    let automaton = create_finite_automaton(tokens);
+    let scan_code = codegen::generate_scan(automaton);
 
     let gen = quote! {
         impl #name {
-            fn test() {
-                println!("Hello World!");
-            }
+            #scan_code
         }
     };
     gen.into()

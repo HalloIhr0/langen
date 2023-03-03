@@ -59,7 +59,7 @@ impl FiniteAutomaton {
                     transitions: vec![],
                 };
                 for range in class.iter() {
-                    let start = min(range.end(), char::from_u32(127).unwrap());
+                    let start = min(range.start(), char::from_u32(127).unwrap());
                     let end = min(range.end(), char::from_u32(127).unwrap());
                     for item in start..=end {
                         result.transitions.push(StateTransition {
