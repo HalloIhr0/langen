@@ -1,7 +1,12 @@
 [package]
 name = "langen_macro"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+license = "MIT"
+description = "A tool to create programming languages"
+homepage = "https://github.com/HalloIhr0/langen"
+repository = "https://github.com/HalloIhr0/langen"
+readme = "../README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

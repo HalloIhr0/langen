@@ -4,9 +4,9 @@ use quote::quote;
 use syn::ItemEnum;
 use syn::{self, Attribute};
 
+mod codegen;
 mod finite_automaton;
 mod lexer;
-mod codegen;
 
 use crate::lexer::*;
 
@@ -21,15 +21,16 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
         for attrib in &variant.attrs {
             match attrib.path.get_ident().unwrap().to_string().as_str() {
                 "token" => {
-                    let regex = parse_token(attrib).unwrap_or_else(|| {
+                    let data = parse_token(attrib).unwrap_or_else(|| {
                         panic!(
-                            "Invalid \"token\" argument for \"{}\", expected #[token(\"<regex>\")]",
+                            "Invalid \"token\" argument for \"{}\", expected token(\"<regex>\"[, ignore=<bool>])",
                             variant.ident
                         )
                     });
                     tokens.push(TokenVariant {
                         name: variant.ident.clone(),
-                        regex,
+                        regex: data.0,
+                        ignore: data.1,
                     })
                 }
                 _ => continue,
@@ -48,12 +49,33 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
     gen.into()
 }
 
-fn parse_token(attrib: &Attribute) -> Option<String> {
+fn parse_token(attrib: &Attribute) -> Option<(String, bool)> {
     match attrib.parse_meta() {
-        Ok(syn::Meta::List(list)) => match list.nested.first() {
-            Some(syn::NestedMeta::Lit(syn::Lit::Str(lit))) => Some(lit.value()),
-            _ => None,
-        },
+        Ok(syn::Meta::List(list)) => {
+            let regex = match list.nested.first() {
+                Some(syn::NestedMeta::Lit(syn::Lit::Str(lit))) => lit.value(),
+                _ => {
+                    return None;
+                }
+            };
+            let mut ignore = false;
+            for element in list.nested.iter() {
+                if let syn::NestedMeta::Meta(syn::Meta::NameValue(option)) = element {
+                    match option.path.get_ident().unwrap().to_string().as_str() {
+                        "ignore" => match &option.lit {
+                            syn::Lit::Bool(value) => ignore = value.value(),
+                            _ => {
+                                return None;
+                            }
+                        },
+                        _ => {
+                            return None;
+                        }
+                    }
+                }
+            }
+            Some((regex, ignore))
+        }
         _ => None,
     }
 }

@@ -8,12 +8,12 @@ use crate::finite_automaton::*;
 pub struct TokenVariant {
     pub name: Ident,
     pub regex: String,
+    pub ignore: bool,
 }
 
 pub fn create_finite_automaton(tokens: Vec<TokenVariant>) -> FiniteAutomaton {
     let nfa = create_nfa(&tokens);
-    let dfa = convert_nfa_to_dfa(&nfa, &tokens);
-    dfa
+    convert_nfa_to_dfa(&nfa, &tokens)
 }
 
 fn create_nfa(tokens: &Vec<TokenVariant>) -> FiniteAutomaton {
@@ -53,7 +53,10 @@ fn create_nfa(tokens: &Vec<TokenVariant>) -> FiniteAutomaton {
         });
         result.end_states.push(EndState {
             state: part.end_states[0].state + old_num_states,
-            token: Some(token.name.clone()),
+            token: match token.ignore {
+                true => None,
+                false => Some(token.name.clone()),
+            },
         })
     }
     result

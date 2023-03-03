@@ -1,10 +1,16 @@
 [package]
 name = "langen"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+license = "MIT"
+description = "A tool to create programming languages"
+homepage = "https://github.com/HalloIhr0/langen"
+repository = "https://github.com/HalloIhr0/langen"
+readme = "../README.md"
+
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-langen_macro = { path = "../langen_macro" }
+langen_macro = { path = "../langen_macro", version="1.0.0" }
 thiserror = "1.0.38"

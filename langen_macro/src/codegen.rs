@@ -8,10 +8,12 @@ pub fn generate_scan(dfa: FiniteAutomaton) -> TokenStream {
     let mut transitions = HashMap::new();
     let num_states = dfa.num_states;
     for transition in &dfa.transitions {
-        if !transitions.contains_key(&transition.transition.unwrap()) {
-            transitions.insert(transition.transition.unwrap(), vec![num_states; num_states as usize]);
-        }
-        transitions.get_mut(&transition.transition.unwrap()).unwrap()[transition.from_state as usize] = transition.to_state;
+        transitions
+            .entry(transition.transition.unwrap())
+            .or_insert_with(|| vec![num_states; num_states as usize]);
+        transitions
+            .get_mut(&transition.transition.unwrap())
+            .unwrap()[transition.from_state as usize] = transition.to_state;
     }
 
     let mut chars = Vec::new();
@@ -24,9 +26,17 @@ pub fn generate_scan(dfa: FiniteAutomaton) -> TokenStream {
     }
     let mut end_states = Vec::new();
     let mut end_tokens = Vec::new();
+    let mut end_states_ignored = Vec::new();
     for state in dfa.end_states {
-        end_states.push(state.state);
-        end_tokens.push(state.token.unwrap());
+        match state.token {
+            Some(token) => {
+                end_states.push(state.state);
+                end_tokens.push(token);
+            }
+            None => {
+                end_states_ignored.push(state.state);
+            }
+        }
     }
     let num_states_usize = num_states as usize;
     let start_state = dfa.start_state;
@@ -45,6 +55,7 @@ pub fn generate_scan(dfa: FiniteAutomaton) -> TokenStream {
                 if current == #num_states {
                     match last {
                         #( #end_states => tokens.push(Self::#end_tokens), )*
+                        #( #end_states_ignored => {}, )*
                     _ => {return Err(langen::errors::LexerError::InvalidChar(i-1))}
                     };
                     current = match c {
@@ -56,6 +67,7 @@ pub fn generate_scan(dfa: FiniteAutomaton) -> TokenStream {
             }
             match current {
                 #( #end_states => tokens.push(Self::#end_tokens), )*
+                #( #end_states_ignored => {}, )*
             _ => {return Err(langen::errors::LexerError::IncompleteToken)}
             };
             Ok(tokens)
