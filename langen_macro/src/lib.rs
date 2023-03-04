@@ -1,5 +1,7 @@
 extern crate proc_macro;
+use parser::{Symbol, Grammar};
 use proc_macro::TokenStream;
+use proc_macro2::Ident;
 use quote::quote;
 use syn::ItemEnum;
 use syn::{self, Attribute};
@@ -7,15 +9,19 @@ use syn::{self, Attribute};
 mod codegen;
 mod finite_automaton;
 mod lexer;
+mod parser;
 
 use crate::lexer::*;
 
-#[proc_macro_derive(Langen, attributes(token))]
+#[proc_macro_derive(Langen, attributes(token, rule))]
 pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
     let base_enum: ItemEnum = syn::parse(input).expect("Langen must be applied to an enum");
     let name = base_enum.ident;
 
     let mut tokens = Vec::new();
+
+    let mut symbols = Vec::new();
+    let mut rules = Vec::new();
 
     for variant in &base_enum.variants {
         for attrib in &variant.attrs {
@@ -31,7 +37,22 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                         name: variant.ident.clone(),
                         regex: data.0,
                         ignore: data.1,
-                    })
+                    });
+                    if !symbols.contains(&Symbol{ ident: variant.ident.clone(), terminal: true }) {
+                        symbols.push(Symbol{ ident: variant.ident.clone(), terminal: true });
+                    }
+                },
+                "rule" => {
+                    let idents = parse_rule(attrib).unwrap_or_else(|| {
+                        panic!(
+                            "Invalid \"rule\" argument for \"{}\", expected token(ident, ident, ...)",
+                            variant.ident
+                        )
+                    });
+                    if !symbols.contains(&Symbol{ ident: variant.ident.clone(), terminal: false }) {
+                        symbols.push(Symbol{ ident: variant.ident.clone(), terminal: false });
+                    }
+                    rules.push((symbols.len()-1, idents));
                 }
                 _ => continue,
             }
@@ -39,8 +60,29 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
     }
 
     let automaton = create_finite_automaton(tokens);
-    let scan_code = codegen::generate_scan(automaton);
 
+    let mut rules_indexed = Vec::new();
+    for (r, l) in rules {
+        let mut indexes = Vec::new();
+        for ident in l {
+            let mut found = false;
+            for (i, s) in symbols.iter().enumerate() {
+                if ident == s.ident {
+                    found = true;
+                    indexes.push(i as u32);
+                    break;
+                }
+            }
+            if !found {
+                panic!("Symbol \"{}\" in rule for \"{}\" doesnt exist", ident.to_string(), symbols[r].ident.to_string());
+            }
+    }
+        rules_indexed.push((r as u32, indexes));
+    }
+    let grammar = Grammar{ symbols, rules: rules_indexed };
+    println!("{grammar}");
+
+    let scan_code = codegen::generate_scan(automaton);
     let gen = quote! {
         impl #name {
             #scan_code
@@ -75,6 +117,21 @@ fn parse_token(attrib: &Attribute) -> Option<(String, bool)> {
                 }
             }
             Some((regex, ignore))
+        }
+        _ => None,
+    }
+}
+
+fn parse_rule(attrib: &Attribute) -> Option<Vec<Ident>> {
+    match attrib.parse_meta() {
+        Ok(syn::Meta::List(list)) => {
+            let mut idents = Vec::new();
+            for element in list.nested.iter() {
+                if let syn::NestedMeta::Meta(syn::Meta::Path(path)) = element {
+                    idents.push(path.get_ident().unwrap().clone())
+                }
+            }
+            Some(idents)
         }
         _ => None,
     }

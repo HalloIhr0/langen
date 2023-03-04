@@ -3,7 +3,7 @@ use std::fmt;
 
 use regex_syntax::hir::Hir;
 use regex_syntax::hir::*;
-use syn::Ident;
+use proc_macro2::Ident;
 
 pub struct StateTransition {
     pub from_state: u32,

@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use regex_syntax::Parser;
-use syn::Ident;
+use proc_macro2::Ident;
 
 use crate::finite_automaton::*;
 
