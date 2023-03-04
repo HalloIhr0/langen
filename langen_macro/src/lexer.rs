@@ -72,7 +72,7 @@ fn convert_nfa_to_dfa(automaton: &FiniteAutomaton, tokens: &Vec<TokenVariant>) -
         transitions: vec![],
     };
     let new_start = epsilon_closure_single(automaton, &automaton.start_state);
-    let mut states = HashMap::<BTreeSet<u32>, u32>::new();
+    let mut states = HashMap::<BTreeSet<usize>, usize>::new();
     states.insert(new_start.clone(), 0);
     let mut active = vec![new_start];
 
@@ -81,7 +81,7 @@ fn convert_nfa_to_dfa(automaton: &FiniteAutomaton, tokens: &Vec<TokenVariant>) -
         for symbol in get_possible_inputs(automaton, &current) {
             let next = epsilon_closure(automaton, &move_result(automaton, &current, symbol));
             if !states.contains_key(&next) {
-                states.insert(next.clone(), states.len() as u32);
+                states.insert(next.clone(), states.len());
                 active.push(next.clone());
             }
             result.transitions.push(StateTransition {
@@ -91,10 +91,10 @@ fn convert_nfa_to_dfa(automaton: &FiniteAutomaton, tokens: &Vec<TokenVariant>) -
             });
         }
     }
-    result.num_states = states.len() as u32;
+    result.num_states = states.len();
 
     // Maps dfa states to nfa ned_states
-    let mut new_ends: HashMap<u32, Option<Ident>> = HashMap::new();
+    let mut new_ends: HashMap<usize, Option<Ident>> = HashMap::new();
     for (k, v) in &states {
         for end_state in automaton.end_states.clone() {
             if k.contains(&end_state.state) {
@@ -131,7 +131,7 @@ fn convert_nfa_to_dfa(automaton: &FiniteAutomaton, tokens: &Vec<TokenVariant>) -
     result
 }
 
-fn get_possible_inputs(automaton: &FiniteAutomaton, states: &BTreeSet<u32>) -> Vec<char> {
+fn get_possible_inputs(automaton: &FiniteAutomaton, states: &BTreeSet<usize>) -> Vec<char> {
     let mut result = Vec::new();
     for transition in &automaton.transitions {
         if states.contains(&transition.from_state) {
@@ -143,7 +143,7 @@ fn get_possible_inputs(automaton: &FiniteAutomaton, states: &BTreeSet<u32>) -> V
     result
 }
 
-fn move_result(automaton: &FiniteAutomaton, states: &BTreeSet<u32>, symbol: char) -> BTreeSet<u32> {
+fn move_result(automaton: &FiniteAutomaton, states: &BTreeSet<usize>, symbol: char) -> BTreeSet<usize> {
     let mut result = BTreeSet::new();
     for transition in &automaton.transitions {
         if states.contains(&transition.from_state) && Some(symbol) == transition.transition {
@@ -153,7 +153,7 @@ fn move_result(automaton: &FiniteAutomaton, states: &BTreeSet<u32>, symbol: char
     result
 }
 
-fn epsilon_closure(automaton: &FiniteAutomaton, states: &BTreeSet<u32>) -> BTreeSet<u32> {
+fn epsilon_closure(automaton: &FiniteAutomaton, states: &BTreeSet<usize>) -> BTreeSet<usize> {
     let mut result = BTreeSet::new();
     for state in states {
         result.extend(epsilon_closure_single(automaton, state));
@@ -161,7 +161,7 @@ fn epsilon_closure(automaton: &FiniteAutomaton, states: &BTreeSet<u32>) -> BTree
     result
 }
 
-fn epsilon_closure_single(automaton: &FiniteAutomaton, state: &u32) -> BTreeSet<u32> {
+fn epsilon_closure_single(automaton: &FiniteAutomaton, state: &usize) -> BTreeSet<usize> {
     let mut result = BTreeSet::from([*state]);
     let mut active = vec![*state];
     while !active.is_empty() {

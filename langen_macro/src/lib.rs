@@ -69,7 +69,7 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
             for (i, s) in symbols.iter().enumerate() {
                 if ident == s.ident {
                     found = true;
-                    indexes.push(i as u32);
+                    indexes.push(i);
                     break;
                 }
             }
@@ -77,7 +77,7 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                 panic!("Symbol \"{}\" in rule for \"{}\" doesnt exist", ident.to_string(), symbols[r].ident.to_string());
             }
     }
-        rules_indexed.push((r as u32, indexes));
+        rules_indexed.push((r, indexes));
     }
     let grammar = Grammar{ symbols, rules: rules_indexed };
     println!("{grammar}");

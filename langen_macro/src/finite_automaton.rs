@@ -6,26 +6,26 @@ use regex_syntax::hir::*;
 use proc_macro2::Ident;
 
 pub struct StateTransition {
-    pub from_state: u32,
+    pub from_state: usize,
     pub transition: Option<char>,
-    pub to_state: u32,
+    pub to_state: usize,
 }
 
 #[derive(Clone)]
 pub struct EndState {
-    pub state: u32,
+    pub state: usize,
     pub token: Option<Ident>,
 }
 
 impl EndState {
-    fn new(state: u32) -> Self {
+    fn new(state: usize) -> Self {
         Self { state, token: None }
     }
 }
 
 pub struct FiniteAutomaton {
-    pub num_states: u32,
-    pub start_state: u32,
+    pub num_states: usize,
+    pub start_state: usize,
     pub end_states: Vec<EndState>,
     pub transitions: Vec<StateTransition>,
 }

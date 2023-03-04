@@ -10,10 +10,10 @@ pub fn generate_scan(dfa: FiniteAutomaton) -> TokenStream {
     for transition in &dfa.transitions {
         transitions
             .entry(transition.transition.unwrap())
-            .or_insert_with(|| vec![num_states; num_states as usize]);
+            .or_insert_with(|| vec![num_states; num_states]);
         transitions
             .get_mut(&transition.transition.unwrap())
-            .unwrap()[transition.from_state as usize] = transition.to_state;
+            .unwrap()[transition.from_state] = transition.to_state;
     }
 
     let mut chars = Vec::new();
@@ -38,18 +38,16 @@ pub fn generate_scan(dfa: FiniteAutomaton) -> TokenStream {
             }
         }
     }
-    let num_states_usize = num_states as usize;
     let start_state = dfa.start_state;
-    let start_state_usize = dfa.start_state as usize;
     quote! {
         fn scan(input: &str) -> Result<Vec<Self>, langen::errors::LexerError> {
-            #( static #identifiers: [u32; #num_states_usize]  = [#tables]; )*
+            #( static #identifiers: [usize; #num_states]  = [#tables]; )*
             let mut tokens = Vec::new();
             let mut last = #num_states;
             let mut current = #start_state;
             for (i, c) in input.chars().enumerate() {
                 current = match c {
-                    #( #chars => #identifiers[current as usize], )*
+                    #( #chars => #identifiers[current], )*
                     _ => {return Err(langen::errors::LexerError::InvalidChar(i))}
                 };
                 if current == #num_states {
@@ -59,7 +57,7 @@ pub fn generate_scan(dfa: FiniteAutomaton) -> TokenStream {
                     _ => {return Err(langen::errors::LexerError::InvalidChar(i-1))}
                     };
                     current = match c {
-                        #( #chars => #identifiers[#start_state_usize], )*
+                        #( #chars => #identifiers[#start_state], )*
                         _ => {return Err(langen::errors::LexerError::InvalidChar(i))}
                     };
                 }

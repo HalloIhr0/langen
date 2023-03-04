@@ -16,7 +16,7 @@ impl Display for Symbol {
 
 pub struct Grammar {
     pub symbols: Vec<Symbol>,
-    pub rules: Vec<(u32, Vec<u32>)>,
+    pub rules: Vec<(usize, Vec<usize>)>,
 }
 
 impl Display for Grammar {
