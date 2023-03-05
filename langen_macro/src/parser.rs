@@ -1,9 +1,16 @@
-use std::{collections::BTreeSet, fmt::Display};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt::Display,
+    iter,
+};
 
 use proc_macro2::Ident;
 
-/// If ident is None, parsing is finished
-#[derive(PartialEq)]
+use crate::finite_automaton::*;
+
+/// If ident is None and terminal is false, it's the new start state
+/// If ident is None and terminal is true, it's the end token
+#[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq, Hash)]
 pub struct Symbol {
     pub ident: Option<Ident>,
     pub terminal: bool,
@@ -46,9 +53,25 @@ struct Item {
     dot_index: usize,
 }
 
-pub fn create_parser_table(g: &mut Grammar) {
-    create_new_start(g);
-    println!("{g}");
+#[derive(Debug, PartialEq)]
+pub enum Action {
+    Shift(usize),  // next state
+    Reduce(usize), // rule by index
+    Accept,
+}
+
+#[derive(Debug)]
+pub struct ParserTable {
+    pub action_table: HashMap<(usize, Symbol), Action>,
+    pub goto_table: HashMap<(usize, Symbol), usize>,
+}
+
+impl ParserTable {
+    pub fn create(g: &mut Grammar) -> Self {
+        create_new_start(g);
+        let graph = generate_graph(g);
+        create_table(g, &graph)
+    }
 }
 
 /// Adds a new symbol to the end of the list, which just links to the first nonterminal symbol
@@ -70,6 +93,129 @@ fn create_new_start(g: &mut Grammar) {
     });
     g.rules
         .push((g.symbols.len() - 1, Vec::from([first.unwrap()])));
+}
+
+/// This function assumes that the last rule is always the new starting rule
+fn generate_graph(g: &Grammar) -> FiniteAutomaton<BTreeSet<Item>, Symbol> {
+    let start = closure(
+        g,
+        &BTreeSet::from([Item {
+            rule_index: g.rules.len() - 1,
+            dot_index: 0,
+        }]),
+    );
+    let mut result = FiniteAutomaton {
+        num_states: 1,
+        start_state: 0,
+        end_states: vec![],
+        transitions: vec![],
+        state_info: vec![start],
+    };
+    let mut current = 0;
+
+    while current < result.num_states {
+        let current_items = &result.state_info[current].clone();
+        let mut next_symbols = BTreeSet::new();
+        for item in current_items {
+            if let Some(symbol) = g.rules[item.rule_index].1.get(item.dot_index) {
+                next_symbols.insert(&g.symbols[*symbol]);
+            }
+        }
+        for symbol in next_symbols {
+            let goto_result = goto(g, current_items, symbol);
+            if !goto_result.is_empty() {
+                if !result.state_info.contains(&goto_result) {
+                    result.state_info.push(goto_result);
+                    result.transitions.push(StateTransition {
+                        from_state: current,
+                        transition: symbol.clone(),
+                        to_state: result.num_states,
+                    });
+                    result.num_states += 1;
+                } else {
+                    let index = result
+                        .state_info
+                        .iter()
+                        .position(|x| *x == goto_result)
+                        .unwrap();
+                    result.transitions.push(StateTransition {
+                        from_state: current,
+                        transition: symbol.clone(),
+                        to_state: index,
+                    });
+                }
+            }
+        }
+        current += 1;
+    }
+    result
+}
+
+/// This function assumes that the last rule is always the new starting rule
+fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, Symbol>) -> ParserTable {
+    let mut action_table = HashMap::new();
+    let mut goto_table = HashMap::new();
+
+    for transition in &graph.transitions {
+        match transition.transition.terminal {
+            true => {
+                action_table.insert(
+                    (transition.from_state, transition.transition.clone()),
+                    Action::Shift(transition.to_state),
+                );
+            }
+            false => {
+                goto_table.insert(
+                    (transition.from_state, transition.transition.clone()),
+                    transition.to_state,
+                );
+            }
+        };
+    }
+    for (i, state) in graph.state_info.iter().enumerate() {
+        let last_index = g.rules.len() - 1;
+        if state.contains(&Item {
+            rule_index: last_index,
+            dot_index: g.rules[last_index].1.len(),
+        }) {
+            action_table.insert(
+                (
+                    i,
+                    Symbol {
+                        ident: None,
+                        terminal: true,
+                    },
+                ),
+                Action::Accept,
+            );
+        }
+        for item in state {
+            if item.dot_index == g.rules[item.rule_index].1.len() {
+                for symbol in g.symbols.iter().chain(iter::once(&Symbol {
+                    ident: None,
+                    terminal: true,
+                })) {
+                    if symbol.terminal {
+                        if let std::collections::hash_map::Entry::Vacant(e) =
+                            action_table.entry((i, symbol.clone()))
+                        {
+                            e.insert(Action::Reduce(item.rule_index));
+                        } else {
+                            // If the previous action is accept, we can safely ignore it
+                            if *action_table.get(&(i, symbol.clone())).unwrap() != Action::Accept {
+                                println!("Conflict");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ParserTable {
+        action_table,
+        goto_table,
+    }
 }
 
 fn closure(g: &Grammar, items: &BTreeSet<Item>) -> BTreeSet<Item> {
@@ -104,24 +250,15 @@ fn closure(g: &Grammar, items: &BTreeSet<Item>) -> BTreeSet<Item> {
 
 fn goto(g: &Grammar, items: &BTreeSet<Item>, next_symbol: &Symbol) -> BTreeSet<Item> {
     let mut result = BTreeSet::new();
-    let mut stack = Vec::new();
     for item in items {
-        stack.push(*item);
-    }
-    while !stack.is_empty() {
-        let mut current = stack.pop().unwrap();
-        if let Some(symbol) = g.rules[current.rule_index].1.get(current.dot_index) {
+        if let Some(symbol) = g.rules[item.rule_index].1.get(item.dot_index) {
             let symbol = &g.symbols[*symbol];
             if symbol == next_symbol {
-                current.dot_index += 1;
-                for item in closure(g, &BTreeSet::from([current])) {
-                    if !result.contains(&item) {
-                        result.insert(item);
-                        stack.push(item);
-                    }
-                }
+                let mut item_copy = *item;
+                item_copy.dot_index += 1;
+                result.insert(item_copy);
             }
         }
     }
-    result
+    closure(g, &result)
 }

@@ -100,7 +100,9 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
         symbols,
         rules: rules_indexed,
     };
-    create_parser_table(&mut grammar);
+
+    let table = ParserTable::create(&mut grammar);
+    println!("{:?}", table);
 
     let scan_code = codegen::generate_scan(automaton);
     let gen = quote! {
