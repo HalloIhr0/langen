@@ -4,7 +4,7 @@ use crate::finite_automaton::FiniteAutomaton;
 use proc_macro2::TokenStream;
 use quote::*;
 
-pub fn generate_scan(dfa: FiniteAutomaton) -> TokenStream {
+pub fn generate_scan(dfa: FiniteAutomaton<(), Option<char>>) -> TokenStream {
     let mut transitions = HashMap::new();
     let num_states = dfa.num_states;
     for transition in &dfa.transitions {

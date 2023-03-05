@@ -1,6 +1,9 @@
+use std::cmp::min;
 use std::collections::{BTreeSet, HashMap};
 
 use proc_macro2::Ident;
+use regex_syntax::hir::Hir;
+use regex_syntax::hir::*;
 use regex_syntax::Parser;
 
 use crate::finite_automaton::*;
@@ -11,33 +14,33 @@ pub struct TokenVariant {
     pub ignore: bool,
 }
 
-pub fn create_finite_automaton(tokens: Vec<TokenVariant>) -> FiniteAutomaton {
+pub fn create_finite_automaton(tokens: Vec<TokenVariant>) -> FiniteAutomaton<(), Option<char>> {
     let nfa = create_nfa(&tokens);
     convert_nfa_to_dfa(&nfa, &tokens)
 }
 
-fn create_nfa(tokens: &Vec<TokenVariant>) -> FiniteAutomaton {
+fn create_nfa(tokens: &Vec<TokenVariant>) -> FiniteAutomaton<(), Option<char>> {
     let mut result = FiniteAutomaton {
         num_states: 1,
         start_state: 0,
         end_states: vec![],
         transitions: vec![],
+        state_info: vec![],
     };
 
     for token in tokens {
-        let part =
-            FiniteAutomaton::from_regex(&Parser::new().parse(&token.regex).unwrap_or_else(|_| {
-                panic!(
-                    "Invalid invalid regex \"{}\" for token \"{}\"",
-                    token.regex, token.name
-                )
-            }))
-            .unwrap_or_else(|| {
-                panic!(
-                    "Couldnt parse regex \"{}\" for token \"{}\"",
-                    token.regex, token.name
-                )
-            });
+        let part = from_regex(&Parser::new().parse(&token.regex).unwrap_or_else(|_| {
+            panic!(
+                "Invalid invalid regex \"{}\" for token \"{}\"",
+                token.regex, token.name
+            )
+        }))
+        .unwrap_or_else(|| {
+            panic!(
+                "Couldnt parse regex \"{}\" for token \"{}\"",
+                token.regex, token.name
+            )
+        });
         if part.end_states.len() != 1 {
             panic!(
                 "Error in regex \"{}\" for token \"{}\"",
@@ -62,14 +65,248 @@ fn create_nfa(tokens: &Vec<TokenVariant>) -> FiniteAutomaton {
     result
 }
 
+/// Converts a regex to an nfa using Thompson's construction
+/// For regex ranges (for example [a-z] or .) only ascii characters are allowed
+fn from_regex(regex: &Hir) -> Option<FiniteAutomaton<(), Option<char>>> {
+    match regex.kind() {
+        HirKind::Empty => Some(FiniteAutomaton {
+            num_states: 1,
+            start_state: 0,
+            end_states: vec![EndState::new(0)],
+            transitions: vec![],
+            state_info: vec![],
+        }),
+        HirKind::Literal(Literal::Unicode(lit)) => Some(FiniteAutomaton {
+            num_states: 2,
+            start_state: 0,
+            end_states: vec![EndState::new(1)],
+            transitions: vec![StateTransition {
+                from_state: 0,
+                transition: Some(*lit),
+                to_state: 1,
+            }],
+            state_info: vec![],
+        }),
+        HirKind::Class(Class::Unicode(class)) => {
+            let mut result = FiniteAutomaton {
+                num_states: 2,
+                start_state: 0,
+                end_states: vec![EndState::new(1)],
+                transitions: vec![],
+                state_info: vec![],
+            };
+            for range in class.iter() {
+                let start = min(range.start(), char::from_u32(127).unwrap());
+                let end = min(range.end(), char::from_u32(127).unwrap());
+                for item in start..=end {
+                    result.transitions.push(StateTransition {
+                        from_state: 0,
+                        transition: Some(item),
+                        to_state: 1,
+                    });
+                }
+            }
+            Some(result)
+        }
+        HirKind::Anchor(_) => todo!(),
+        HirKind::WordBoundary(_) => todo!(),
+        HirKind::Repetition(repetition) => handle_repititon(repetition),
+        HirKind::Group(group) => from_regex(&group.hir),
+        HirKind::Concat(elements) => {
+            let mut result = FiniteAutomaton {
+                num_states: 1,
+                start_state: 0,
+                end_states: vec![EndState::new(0)],
+                transitions: vec![],
+                state_info: vec![],
+            };
+            for part in elements {
+                let part_automaton = from_regex(part)?;
+                if part_automaton.end_states.len() != 1 {
+                    return None;
+                }
+                let old_num_states = result.num_states;
+                result.add_automaton(&part_automaton);
+                result.transitions.push(StateTransition {
+                    from_state: result.end_states[0].state,
+                    transition: None,
+                    to_state: part_automaton.start_state + old_num_states,
+                });
+                result.end_states = vec![EndState::new(
+                    part_automaton.end_states[0].state + old_num_states,
+                )];
+            }
+            Some(result)
+        }
+        HirKind::Alternation(elements) => {
+            let mut result = FiniteAutomaton {
+                num_states: 2,
+                start_state: 0,
+                end_states: vec![EndState::new(1)],
+                transitions: vec![],
+                state_info: vec![],
+            };
+            for part in elements {
+                let part_automaton = from_regex(part)?;
+                if part_automaton.end_states.len() != 1 {
+                    return None;
+                }
+                let old_num_states = result.num_states;
+                result.add_automaton(&part_automaton);
+                result.transitions.push(StateTransition {
+                    from_state: 0,
+                    transition: None,
+                    to_state: part_automaton.start_state + old_num_states,
+                });
+                result.transitions.push(StateTransition {
+                    from_state: part_automaton.end_states[0].state + old_num_states,
+                    transition: None,
+                    to_state: 1,
+                });
+            }
+            Some(result)
+        }
+        _ => None,
+    }
+}
+
+fn handle_repititon(repitition: &Repetition) -> Option<FiniteAutomaton<(), Option<char>>> {
+    match repitition.kind {
+        RepetitionKind::ZeroOrOne => {
+            let mut result = FiniteAutomaton {
+                num_states: 2,
+                start_state: 0,
+                end_states: vec![EndState::new(1)],
+                transitions: vec![StateTransition {
+                    from_state: 0,
+                    transition: None,
+                    to_state: 1,
+                }],
+                state_info: vec![],
+            };
+            let part_automaton = from_regex(&repitition.hir)?;
+            if part_automaton.end_states.len() != 1 {
+                return None;
+            }
+            let old_num_states = result.num_states;
+            result.add_automaton(&part_automaton);
+            result.transitions.push(StateTransition {
+                from_state: 0,
+                transition: None,
+                to_state: part_automaton.start_state + old_num_states,
+            });
+            result.transitions.push(StateTransition {
+                from_state: part_automaton.end_states[0].state + old_num_states,
+                transition: None,
+                to_state: 1,
+            });
+            Some(result)
+        }
+        RepetitionKind::ZeroOrMore => {
+            let mut result = FiniteAutomaton {
+                num_states: 4,
+                start_state: 0,
+                end_states: vec![EndState::new(3)],
+                transitions: vec![
+                    StateTransition {
+                        from_state: 0,
+                        transition: None,
+                        to_state: 1,
+                    },
+                    StateTransition {
+                        from_state: 1,
+                        transition: None,
+                        to_state: 2,
+                    },
+                    StateTransition {
+                        from_state: 2,
+                        transition: None,
+                        to_state: 1,
+                    },
+                    StateTransition {
+                        from_state: 2,
+                        transition: None,
+                        to_state: 3,
+                    },
+                ],
+                state_info: vec![],
+            };
+            let part_automaton = from_regex(&repitition.hir)?;
+            if part_automaton.end_states.len() != 1 {
+                return None;
+            }
+            let old_num_states = result.num_states;
+            result.add_automaton(&part_automaton);
+            result.transitions.push(StateTransition {
+                from_state: 1,
+                transition: None,
+                to_state: part_automaton.start_state + old_num_states,
+            });
+            result.transitions.push(StateTransition {
+                from_state: part_automaton.end_states[0].state + old_num_states,
+                transition: None,
+                to_state: 2,
+            });
+            Some(result)
+        }
+        RepetitionKind::OneOrMore => {
+            let mut result = FiniteAutomaton {
+                num_states: 4,
+                start_state: 0,
+                end_states: vec![EndState::new(3)],
+                transitions: vec![
+                    StateTransition {
+                        from_state: 0,
+                        transition: None,
+                        to_state: 1,
+                    },
+                    StateTransition {
+                        from_state: 2,
+                        transition: None,
+                        to_state: 1,
+                    },
+                    StateTransition {
+                        from_state: 2,
+                        transition: None,
+                        to_state: 3,
+                    },
+                ],
+                state_info: vec![],
+            };
+            let part_automaton = from_regex(&repitition.hir)?;
+            if part_automaton.end_states.len() != 1 {
+                return None;
+            }
+            let old_num_states = result.num_states;
+            result.add_automaton(&part_automaton);
+            result.transitions.push(StateTransition {
+                from_state: 1,
+                transition: None,
+                to_state: part_automaton.start_state + old_num_states,
+            });
+            result.transitions.push(StateTransition {
+                from_state: part_automaton.end_states[0].state + old_num_states,
+                transition: None,
+                to_state: 2,
+            });
+            Some(result)
+        }
+        RepetitionKind::Range(_) => todo!(),
+    }
+}
+
 /// Converts an nfa (nondeterministic finite automaton) to an dfa (deterministic finite automaton) using powerset construction the powerset construction
 /// The token vector is used, to determine which tokens have priority over other tokens. The tokens that appear first have priority
-fn convert_nfa_to_dfa(automaton: &FiniteAutomaton, tokens: &Vec<TokenVariant>) -> FiniteAutomaton {
+fn convert_nfa_to_dfa(
+    automaton: &FiniteAutomaton<(), Option<char>>,
+    tokens: &Vec<TokenVariant>,
+) -> FiniteAutomaton<(), Option<char>> {
     let mut result = FiniteAutomaton {
         num_states: 1,
         start_state: 0,
         end_states: vec![],
         transitions: vec![],
+        state_info: vec![],
     };
     let new_start = epsilon_closure_single(automaton, &automaton.start_state);
     let mut states = HashMap::<BTreeSet<usize>, usize>::new();
@@ -131,7 +368,10 @@ fn convert_nfa_to_dfa(automaton: &FiniteAutomaton, tokens: &Vec<TokenVariant>) -
     result
 }
 
-fn get_possible_inputs(automaton: &FiniteAutomaton, states: &BTreeSet<usize>) -> Vec<char> {
+fn get_possible_inputs(
+    automaton: &FiniteAutomaton<(), Option<char>>,
+    states: &BTreeSet<usize>,
+) -> Vec<char> {
     let mut result = Vec::new();
     for transition in &automaton.transitions {
         if states.contains(&transition.from_state) {
@@ -144,7 +384,7 @@ fn get_possible_inputs(automaton: &FiniteAutomaton, states: &BTreeSet<usize>) ->
 }
 
 fn move_result(
-    automaton: &FiniteAutomaton,
+    automaton: &FiniteAutomaton<(), Option<char>>,
     states: &BTreeSet<usize>,
     symbol: char,
 ) -> BTreeSet<usize> {
@@ -157,7 +397,10 @@ fn move_result(
     result
 }
 
-fn epsilon_closure(automaton: &FiniteAutomaton, states: &BTreeSet<usize>) -> BTreeSet<usize> {
+fn epsilon_closure(
+    automaton: &FiniteAutomaton<(), Option<char>>,
+    states: &BTreeSet<usize>,
+) -> BTreeSet<usize> {
     let mut result = BTreeSet::new();
     for state in states {
         result.extend(epsilon_closure_single(automaton, state));
@@ -165,7 +408,10 @@ fn epsilon_closure(automaton: &FiniteAutomaton, states: &BTreeSet<usize>) -> BTr
     result
 }
 
-fn epsilon_closure_single(automaton: &FiniteAutomaton, state: &usize) -> BTreeSet<usize> {
+fn epsilon_closure_single(
+    automaton: &FiniteAutomaton<(), Option<char>>,
+    state: &usize,
+) -> BTreeSet<usize> {
     let mut result = BTreeSet::from([*state]);
     let mut active = vec![*state];
     while !active.is_empty() {
