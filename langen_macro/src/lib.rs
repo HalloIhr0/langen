@@ -1,5 +1,5 @@
 extern crate proc_macro;
-use parser::{Symbol, Grammar};
+
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::quote;
@@ -12,6 +12,7 @@ mod lexer;
 mod parser;
 
 use crate::lexer::*;
+use crate::parser::*;
 
 #[proc_macro_derive(Langen, attributes(token, rule))]
 pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
@@ -38,10 +39,16 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                         regex: data.0,
                         ignore: data.1,
                     });
-                    if !symbols.contains(&Symbol{ ident: variant.ident.clone(), terminal: true }) {
-                        symbols.push(Symbol{ ident: variant.ident.clone(), terminal: true });
+                    if !symbols.contains(&Symbol {
+                        ident: Some(variant.ident.clone()),
+                        terminal: true,
+                    }) {
+                        symbols.push(Symbol {
+                            ident: Some(variant.ident.clone()),
+                            terminal: true,
+                        });
                     }
-                },
+                }
                 "rule" => {
                     let idents = parse_rule(attrib).unwrap_or_else(|| {
                         panic!(
@@ -49,10 +56,16 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                             variant.ident
                         )
                     });
-                    if !symbols.contains(&Symbol{ ident: variant.ident.clone(), terminal: false }) {
-                        symbols.push(Symbol{ ident: variant.ident.clone(), terminal: false });
+                    if !symbols.contains(&Symbol {
+                        ident: Some(variant.ident.clone()),
+                        terminal: false,
+                    }) {
+                        symbols.push(Symbol {
+                            ident: Some(variant.ident.clone()),
+                            terminal: false,
+                        });
                     }
-                    rules.push((symbols.len()-1, idents));
+                    rules.push((symbols.len() - 1, idents));
                 }
                 _ => continue,
             }
@@ -64,23 +77,30 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
     let mut rules_indexed = Vec::new();
     for (r, l) in rules {
         let mut indexes = Vec::new();
-        for ident in l {
+        for ident in &l {
             let mut found = false;
             for (i, s) in symbols.iter().enumerate() {
-                if ident == s.ident {
+                if Some(ident.clone()) == s.ident {
                     found = true;
                     indexes.push(i);
                     break;
                 }
             }
             if !found {
-                panic!("Symbol \"{}\" in rule for \"{}\" doesnt exist", ident.to_string(), symbols[r].ident.to_string());
+                panic!(
+                    "Symbol \"{}\" in rule for \"{}\" doesnt exist",
+                    ident,
+                    symbols[r].ident.as_ref().unwrap()
+                );
             }
-    }
+        }
         rules_indexed.push((r, indexes));
     }
-    let grammar = Grammar{ symbols, rules: rules_indexed };
-    println!("{grammar}");
+    let mut grammar = Grammar {
+        symbols,
+        rules: rules_indexed,
+    };
+    create_parser_table(&mut grammar);
 
     let scan_code = codegen::generate_scan(automaton);
     let gen = quote! {

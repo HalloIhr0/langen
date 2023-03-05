@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
-use regex_syntax::Parser;
 use proc_macro2::Ident;
+use regex_syntax::Parser;
 
 use crate::finite_automaton::*;
 
@@ -143,7 +143,11 @@ fn get_possible_inputs(automaton: &FiniteAutomaton, states: &BTreeSet<usize>) ->
     result
 }
 
-fn move_result(automaton: &FiniteAutomaton, states: &BTreeSet<usize>, symbol: char) -> BTreeSet<usize> {
+fn move_result(
+    automaton: &FiniteAutomaton,
+    states: &BTreeSet<usize>,
+    symbol: char,
+) -> BTreeSet<usize> {
     let mut result = BTreeSet::new();
     for transition in &automaton.transitions {
         if states.contains(&transition.from_state) && Some(symbol) == transition.transition {

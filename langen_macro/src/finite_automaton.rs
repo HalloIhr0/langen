@@ -1,9 +1,9 @@
 use std::cmp::min;
 use std::fmt;
 
+use proc_macro2::Ident;
 use regex_syntax::hir::Hir;
 use regex_syntax::hir::*;
-use proc_macro2::Ident;
 
 pub struct StateTransition {
     pub from_state: usize,
