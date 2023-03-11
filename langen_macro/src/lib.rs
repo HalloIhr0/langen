@@ -39,11 +39,11 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                         regex: data.0,
                         ignore: data.1,
                     });
-                    if !symbols.contains(&Symbol {
+                    if !symbols.contains(&ParserSymbol {
                         ident: Some(variant.ident.clone()),
                         terminal: true,
                     }) {
-                        symbols.push(Symbol {
+                        symbols.push(ParserSymbol {
                             ident: Some(variant.ident.clone()),
                             terminal: true,
                         });
@@ -56,11 +56,11 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                             variant.ident
                         )
                     });
-                    if !symbols.contains(&Symbol {
+                    if !symbols.contains(&ParserSymbol {
                         ident: Some(variant.ident.clone()),
                         terminal: false,
                     }) {
-                        symbols.push(Symbol {
+                        symbols.push(ParserSymbol {
                             ident: Some(variant.ident.clone()),
                             terminal: false,
                         });
@@ -102,12 +102,14 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
     };
 
     let table = ParserTable::create(&mut grammar);
-    println!("{:?}", table);
+    // println!("{:?}", table);
 
     let scan_code = codegen::generate_scan(automaton);
+    let check_code = codegen::generate_check(&grammar, &table);
     let gen = quote! {
         impl #name {
             #scan_code
+            #check_code
         }
     };
     gen.into()

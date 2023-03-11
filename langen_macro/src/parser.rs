@@ -8,15 +8,14 @@ use proc_macro2::Ident;
 
 use crate::finite_automaton::*;
 
-/// If ident is None and terminal is false, it's the new start state
-/// If ident is None and terminal is true, it's the end token
+/// If ident is None and terminal is true, it's the eof token
 #[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq, Hash)]
-pub struct Symbol {
+pub struct ParserSymbol {
     pub ident: Option<Ident>,
     pub terminal: bool,
 }
 
-impl Display for Symbol {
+impl Display for ParserSymbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.ident {
             Some(value) => write!(f, "{} ({})", value, self.terminal),
@@ -26,7 +25,7 @@ impl Display for Symbol {
 }
 
 pub struct Grammar {
-    pub symbols: Vec<Symbol>,
+    pub symbols: Vec<ParserSymbol>,
     pub rules: Vec<(usize, Vec<usize>)>,
 }
 
@@ -62,45 +61,42 @@ pub enum Action {
 
 #[derive(Debug)]
 pub struct ParserTable {
-    pub action_table: HashMap<(usize, Symbol), Action>,
-    pub goto_table: HashMap<(usize, Symbol), usize>,
+    pub action_table: HashMap<(usize, ParserSymbol), Action>,
+    pub goto_table: HashMap<(usize, ParserSymbol), usize>,
+    pub num_states: usize,
 }
 
 impl ParserTable {
     pub fn create(g: &mut Grammar) -> Self {
-        create_new_start(g);
+        check_start(&g);
         let graph = generate_graph(g);
         create_table(g, &graph)
     }
 }
 
-/// Adds a new symbol to the end of the list, which just links to the first nonterminal symbol
-fn create_new_start(g: &mut Grammar) {
-    let mut first = None;
-    for (i, symbol) in g.symbols.iter().enumerate() {
-        if !symbol.terminal {
-            first = Some(i);
-            break;
+fn check_start(g: &Grammar) {
+    let start_symbol = g.rules[0].0;
+    let mut found_start = false;
+    for (from, to) in &g.rules {
+        if to.contains(&start_symbol) {
+            panic!("Rule for \"{}\" can't produce the start symbol\nConsider adding a new start symbol which hast a rule that converts it to the original start symbol", g.symbols[*from].ident.as_ref().unwrap().to_string());
+        }
+        if *from == start_symbol {
+            if found_start {
+                panic!("Can't have two or more rules for the start symbol\nConsider adding a new start symbol which hast a rule that converts it to the original start symbol");
+            } else {
+                found_start = true;
+            }
         }
     }
-    if first.is_none() {
-        panic!("No rules defined")
-    }
-
-    g.symbols.push(Symbol {
-        ident: None,
-        terminal: false,
-    });
-    g.rules
-        .push((g.symbols.len() - 1, Vec::from([first.unwrap()])));
 }
 
-/// This function assumes that the last rule is always the new starting rule
-fn generate_graph(g: &Grammar) -> FiniteAutomaton<BTreeSet<Item>, Symbol> {
+/// This function assumes that the first rule is always the starting rule
+fn generate_graph(g: &Grammar) -> FiniteAutomaton<BTreeSet<Item>, ParserSymbol> {
     let start = closure(
         g,
         &BTreeSet::from([Item {
-            rule_index: g.rules.len() - 1,
+            rule_index: 0,
             dot_index: 0,
         }]),
     );
@@ -151,8 +147,8 @@ fn generate_graph(g: &Grammar) -> FiniteAutomaton<BTreeSet<Item>, Symbol> {
     result
 }
 
-/// This function assumes that the last rule is always the new starting rule
-fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, Symbol>) -> ParserTable {
+/// This function assumes that the first rule is always the starting rule
+fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, ParserSymbol>) -> ParserTable {
     let mut action_table = HashMap::new();
     let mut goto_table = HashMap::new();
 
@@ -173,7 +169,7 @@ fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, Symbol>) ->
         };
     }
     for (i, state) in graph.state_info.iter().enumerate() {
-        let last_index = g.rules.len() - 1;
+        let last_index = 0;
         if state.contains(&Item {
             rule_index: last_index,
             dot_index: g.rules[last_index].1.len(),
@@ -181,7 +177,7 @@ fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, Symbol>) ->
             action_table.insert(
                 (
                     i,
-                    Symbol {
+                    ParserSymbol {
                         ident: None,
                         terminal: true,
                     },
@@ -191,7 +187,7 @@ fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, Symbol>) ->
         }
         for item in state {
             if item.dot_index == g.rules[item.rule_index].1.len() {
-                for symbol in g.symbols.iter().chain(iter::once(&Symbol {
+                for symbol in g.symbols.iter().chain(iter::once(&ParserSymbol {
                     ident: None,
                     terminal: true,
                 })) {
@@ -215,6 +211,7 @@ fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, Symbol>) ->
     ParserTable {
         action_table,
         goto_table,
+        num_states: graph.num_states,
     }
 }
 
@@ -248,7 +245,7 @@ fn closure(g: &Grammar, items: &BTreeSet<Item>) -> BTreeSet<Item> {
     result
 }
 
-fn goto(g: &Grammar, items: &BTreeSet<Item>, next_symbol: &Symbol) -> BTreeSet<Item> {
+fn goto(g: &Grammar, items: &BTreeSet<Item>, next_symbol: &ParserSymbol) -> BTreeSet<Item> {
     let mut result = BTreeSet::new();
     for item in items {
         if let Some(symbol) = g.rules[item.rule_index].1.get(item.dot_index) {
