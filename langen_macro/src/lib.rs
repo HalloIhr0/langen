@@ -1,5 +1,7 @@
 extern crate proc_macro;
 
+use std::collections::HashMap;
+
 use proc_macro::TokenStream;
 use proc_macro2::Ident;
 use quote::quote;
@@ -99,7 +101,9 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
     let mut grammar = Grammar {
         symbols,
         rules: rules_indexed,
+        first_map: HashMap::new(),
     };
+    grammar.compute_first();
 
     let table = ParserTable::create(&mut grammar);
     // println!("{:?}", table);
