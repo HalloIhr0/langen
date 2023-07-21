@@ -76,15 +76,18 @@ pub fn generate_scan(dfa: FiniteAutomaton<(), Option<char>>) -> TokenStream {
 pub fn generate_check(grammar: &Grammar, table: &ParserTable) -> TokenStream {
     let mut actions = vec![HashMap::new(); table.num_states];
     let mut eof_actions = HashMap::new();
-    for (k, _) in &table.action_table {
-        match k.1.ident.clone() {
-            Some(ident) => {
-                actions[k.0].insert(ident, generate_parser_action(grammar, table, k));
+    for k in table.action_table.keys() {
+        match &k.1 {
+            ParserSymbol::Symbol(ident) => {
+                actions[k.0].insert(ident, generate_parser_action(grammar, table, k))
             }
-            None => {
-                eof_actions.insert(k.0, generate_parser_action(grammar, table, k));
+            ParserSymbol::Terminal(ident) => {
+                actions[k.0].insert(ident, generate_parser_action(grammar, table, k))
             }
-        }
+            ParserSymbol::Eof => eof_actions.insert(k.0, generate_parser_action(grammar, table, k)),
+            ParserSymbol::Epsilon => panic!(),
+            ParserSymbol::Start => panic!(),
+        };
     }
     let mut actions_keys = vec![];
     let mut actions_values = vec![];
@@ -146,7 +149,7 @@ fn generate_parser_action(
 ) -> TokenStream {
     match table.action_table.get(state).expect("b") {
         crate::parser::Action::Shift(next_state) => {
-            let token = state.1.ident.clone().expect("c");
+            let token = state.1.get_ident().unwrap();
             quote! {
                 println!("Shift({})", #next_state);
                 state_stack.push(#next_state);
@@ -162,9 +165,8 @@ fn generate_parser_action(
         crate::parser::Action::Reduce(rule_index) => {
             let num_removed = grammar.rules[*rule_index].1.len();
             let token = grammar.symbols[grammar.rules[*rule_index].0]
-                .ident
-                .clone()
-                .expect("d");
+                .get_ident()
+                .unwrap();
             let mut goto_results_keys = vec![];
             let mut goto_results_values = vec![];
             for (k, v) in &table.goto_table {

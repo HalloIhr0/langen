@@ -8,18 +8,45 @@ use proc_macro2::Ident;
 
 use crate::finite_automaton::*;
 
-/// If ident is None and terminal is true, it's the eof token
 #[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq, Hash)]
-pub struct ParserSymbol {
-    pub ident: Option<Ident>,
-    pub terminal: bool,
+pub enum ParserSymbol {
+    Symbol(Ident),
+    Terminal(Ident),
+    Eof,
+    Epsilon,
+    Start,
+}
+
+impl ParserSymbol {
+    pub fn get_ident(&self) -> Option<Ident> {
+        match self {
+            ParserSymbol::Symbol(ident) => Some(ident.clone()),
+            ParserSymbol::Terminal(ident) => Some(ident.clone()),
+            ParserSymbol::Eof => None,
+            ParserSymbol::Epsilon => None,
+            ParserSymbol::Start => None,
+        }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        match self {
+            ParserSymbol::Symbol(_) => false,
+            ParserSymbol::Terminal(_) => true,
+            ParserSymbol::Eof => true,
+            ParserSymbol::Epsilon => todo!(),
+            ParserSymbol::Start => false,
+        }
+    }
 }
 
 impl Display for ParserSymbol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.ident {
-            Some(value) => write!(f, "{} ({})", value, self.terminal),
-            None => write!(f, "START STATE ({})", self.terminal),
+        match self {
+            ParserSymbol::Symbol(ident) => write!(f, "{}", ident),
+            ParserSymbol::Terminal(ident) => write!(f, "{} (TERMINAL)", ident),
+            ParserSymbol::Eof => write!(f, "EOF"),
+            ParserSymbol::Epsilon => write!(f, "EPSILON"),
+            ParserSymbol::Start => write!(f, "START"),
         }
     }
 }
@@ -68,7 +95,7 @@ pub struct ParserTable {
 
 impl ParserTable {
     pub fn create(g: &mut Grammar) -> Self {
-        check_start(&g);
+        check_start(g);
         let graph = generate_graph(g);
         create_table(g, &graph)
     }
@@ -79,7 +106,7 @@ fn check_start(g: &Grammar) {
     let mut found_start = false;
     for (from, to) in &g.rules {
         if to.contains(&start_symbol) {
-            panic!("Rule for \"{}\" can't produce the start symbol\nConsider adding a new start symbol which hast a rule that converts it to the original start symbol", g.symbols[*from].ident.as_ref().unwrap().to_string());
+            panic!("Rule for \"{}\" can't produce the start symbol\nConsider adding a new start symbol which hast a rule that converts it to the original start symbol", g.symbols[*from].get_ident().as_ref().unwrap());
         }
         if *from == start_symbol {
             if found_start {
@@ -153,7 +180,7 @@ fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, ParserSymbo
     let mut goto_table = HashMap::new();
 
     for transition in &graph.transitions {
-        match transition.transition.terminal {
+        match transition.transition.is_terminal() {
             true => {
                 action_table.insert(
                     (transition.from_state, transition.transition.clone()),
@@ -174,24 +201,12 @@ fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, ParserSymbo
             rule_index: last_index,
             dot_index: g.rules[last_index].1.len(),
         }) {
-            action_table.insert(
-                (
-                    i,
-                    ParserSymbol {
-                        ident: None,
-                        terminal: true,
-                    },
-                ),
-                Action::Accept,
-            );
+            action_table.insert((i, ParserSymbol::Eof), Action::Accept);
         }
         for item in state {
             if item.dot_index == g.rules[item.rule_index].1.len() {
-                for symbol in g.symbols.iter().chain(iter::once(&ParserSymbol {
-                    ident: None,
-                    terminal: true,
-                })) {
-                    if symbol.terminal {
+                for symbol in g.symbols.iter().chain(iter::once(&ParserSymbol::Eof)) {
+                    if symbol.is_terminal() {
                         if let std::collections::hash_map::Entry::Vacant(e) =
                             action_table.entry((i, symbol.clone()))
                         {
@@ -226,7 +241,7 @@ fn closure(g: &Grammar, items: &BTreeSet<Item>) -> BTreeSet<Item> {
         let current = stack.pop().unwrap();
         if let Some(symbol) = g.rules[current.rule_index].1.get(current.dot_index) {
             let symbol = &g.symbols[*symbol];
-            if !symbol.terminal {
+            if !symbol.is_terminal() {
                 for (i, (rule, _)) in g.rules.iter().enumerate() {
                     if g.symbols.get(*rule).unwrap() == symbol {
                         let item = Item {

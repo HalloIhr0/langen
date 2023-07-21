@@ -39,14 +39,8 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                         regex: data.0,
                         ignore: data.1,
                     });
-                    if !symbols.contains(&ParserSymbol {
-                        ident: Some(variant.ident.clone()),
-                        terminal: true,
-                    }) {
-                        symbols.push(ParserSymbol {
-                            ident: Some(variant.ident.clone()),
-                            terminal: true,
-                        });
+                    if !symbols.contains(&ParserSymbol::Terminal(variant.ident.clone())) {
+                        symbols.push(ParserSymbol::Terminal(variant.ident.clone()));
                     }
                 }
                 "rule" => {
@@ -56,14 +50,8 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                             variant.ident
                         )
                     });
-                    if !symbols.contains(&ParserSymbol {
-                        ident: Some(variant.ident.clone()),
-                        terminal: false,
-                    }) {
-                        symbols.push(ParserSymbol {
-                            ident: Some(variant.ident.clone()),
-                            terminal: false,
-                        });
+                    if !symbols.contains(&ParserSymbol::Symbol(variant.ident.clone())) {
+                        symbols.push(ParserSymbol::Symbol(variant.ident.clone()));
                     }
                     rules.push((symbols.len() - 1, idents));
                 }
@@ -80,7 +68,7 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
         for ident in &l {
             let mut found = false;
             for (i, s) in symbols.iter().enumerate() {
-                if Some(ident.clone()) == s.ident {
+                if Some(ident.clone()) == s.get_ident() {
                     found = true;
                     indexes.push(i);
                     break;
@@ -90,7 +78,7 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                 panic!(
                     "Symbol \"{}\" in rule for \"{}\" doesnt exist",
                     ident,
-                    symbols[r].ident.as_ref().unwrap()
+                    symbols[r].get_ident().as_ref().unwrap()
                 );
             }
         }
