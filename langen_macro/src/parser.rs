@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeSet, HashMap},
     fmt::Display,
-    iter,
+    hash::Hash,
 };
 
 use proc_macro2::Ident;
@@ -54,6 +54,73 @@ impl Display for ParserSymbol {
 pub struct Grammar {
     pub symbols: Vec<ParserSymbol>,
     pub rules: Vec<(usize, Vec<usize>)>,
+    pub first_map: HashMap<ParserSymbol, BTreeSet<ParserSymbol>>,
+}
+
+impl Grammar {
+    pub fn compute_first(&mut self) {
+        self.first_map
+            .entry(ParserSymbol::Eof)
+            .or_insert_with(BTreeSet::new)
+            .insert(ParserSymbol::Eof);
+        for symbol in &self.symbols {
+            if symbol.is_terminal() {
+                self.first_map
+                    .entry(symbol.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(symbol.clone());
+            }
+        }
+        for (from, to) in &self.rules {
+            if to.is_empty() {
+                // Epsilon
+                self.first_map
+                    .entry(self.symbols[*from].clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(ParserSymbol::Epsilon);
+            }
+        }
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for (from, to) in &self.rules {
+                let mut broken = false; // This name is... interesting?... It's better than "breaked" tho
+                for symbol in to {
+                    let symbol = &self.symbols[*symbol];
+                    let mut first = self
+                        .first_map
+                        .get(symbol)
+                        .unwrap_or(&BTreeSet::new())
+                        .clone();
+                    let has_epsilon = first.remove(&ParserSymbol::Epsilon);
+                    let entry = self
+                        .first_map
+                        .entry(self.symbols[*from].clone())
+                        .or_insert_with(BTreeSet::new);
+                    let prev = entry.clone();
+                    entry.append(&mut first);
+                    if prev != *entry {
+                        changed = true;
+                    }
+                    if !has_epsilon {
+                        broken = true;
+                        break;
+                    }
+                }
+                if !broken {
+                    let entry = self
+                        .first_map
+                        .entry(self.symbols[*from].clone())
+                        .or_insert_with(BTreeSet::new);
+                    let prev = entry.clone();
+                    entry.insert(ParserSymbol::Epsilon);
+                    if prev != *entry {
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Display for Grammar {
@@ -73,10 +140,11 @@ impl Display for Grammar {
     }
 }
 
-#[derive(Debug, Copy, Clone, Ord, Eq, PartialOrd, PartialEq)]
+#[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq)]
 struct Item {
     rule_index: usize,
     dot_index: usize,
+    lookahead: BTreeSet<ParserSymbol>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -97,6 +165,7 @@ impl ParserTable {
     pub fn create(g: &mut Grammar) -> Self {
         check_start(g);
         let graph = generate_graph(g);
+        // println!("{graph}");
         create_table(g, &graph)
     }
 }
@@ -125,6 +194,7 @@ fn generate_graph(g: &Grammar) -> FiniteAutomaton<BTreeSet<Item>, ParserSymbol> 
         &BTreeSet::from([Item {
             rule_index: 0,
             dot_index: 0,
+            lookahead: BTreeSet::from([ParserSymbol::Eof]),
         }]),
     );
     let mut result = FiniteAutomaton {
@@ -196,16 +266,13 @@ fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, ParserSymbo
         };
     }
     for (i, state) in graph.state_info.iter().enumerate() {
-        let last_index = 0;
-        if state.contains(&Item {
-            rule_index: last_index,
-            dot_index: g.rules[last_index].1.len(),
-        }) {
-            action_table.insert((i, ParserSymbol::Eof), Action::Accept);
-        }
         for item in state {
+            if item.rule_index == 0 && item.dot_index == g.rules[0].1.len() {
+                action_table.insert((i, ParserSymbol::Eof), Action::Accept);
+                continue;
+            }
             if item.dot_index == g.rules[item.rule_index].1.len() {
-                for symbol in g.symbols.iter().chain(iter::once(&ParserSymbol::Eof)) {
+                for symbol in &item.lookahead {
                     if symbol.is_terminal() {
                         if let std::collections::hash_map::Entry::Vacant(e) =
                             action_table.entry((i, symbol.clone()))
@@ -234,22 +301,32 @@ fn closure(g: &Grammar, items: &BTreeSet<Item>) -> BTreeSet<Item> {
     let mut result = BTreeSet::new();
     let mut stack = Vec::new();
     for item in items {
-        result.insert(*item);
-        stack.push(*item);
+        result.insert(item.clone());
+        stack.push(item.clone());
     }
-    while !stack.is_empty() {
-        let current = stack.pop().unwrap();
+    while let Some(current) = stack.pop() {
         if let Some(symbol) = g.rules[current.rule_index].1.get(current.dot_index) {
-            let symbol = &g.symbols[*symbol];
-            if !symbol.is_terminal() {
-                for (i, (rule, _)) in g.rules.iter().enumerate() {
-                    if g.symbols.get(*rule).unwrap() == symbol {
+            let next_symbol = &g.symbols[*symbol];
+            if !next_symbol.is_terminal() {
+                for (rule_index, (rule_from, _)) in g.rules.iter().enumerate() {
+                    if g.symbols.get(*rule_from).unwrap() == next_symbol {
+                        let mut after = vec![];
+                        for i in (current.dot_index + 1)..(g.rules[current.rule_index].1.len()) {
+                            after.push(g.symbols[g.rules[current.rule_index].1[i]].clone());
+                        }
+                        let mut lookahead = BTreeSet::new();
+                        for l in &current.lookahead {
+                            let mut new = after.clone();
+                            new.push(l.clone());
+                            lookahead.append(&mut first(g, &new));
+                        }
                         let item = Item {
-                            rule_index: i,
+                            rule_index,
                             dot_index: 0,
+                            lookahead,
                         };
                         if !result.contains(&item) {
-                            result.insert(item);
+                            result.insert(item.clone());
                             stack.push(item);
                         }
                     }
@@ -257,7 +334,21 @@ fn closure(g: &Grammar, items: &BTreeSet<Item>) -> BTreeSet<Item> {
             }
         }
     }
-    result
+    // Merge simmilar states
+    let mut merged_results: Vec<Item> = Vec::new(); // cant iter mut over a BTreeSet (i think)
+    'item_loop: for mut item in result {
+        for already_merged in merged_results.iter_mut() {
+            if item.rule_index == already_merged.rule_index
+                && item.dot_index == already_merged.dot_index
+            {
+                // only lookahead is different
+                already_merged.lookahead.append(&mut item.lookahead);
+                continue 'item_loop;
+            }
+        }
+        merged_results.push(item);
+    }
+    BTreeSet::from_iter(merged_results.iter().cloned())
 }
 
 fn goto(g: &Grammar, items: &BTreeSet<Item>, next_symbol: &ParserSymbol) -> BTreeSet<Item> {
@@ -266,11 +357,27 @@ fn goto(g: &Grammar, items: &BTreeSet<Item>, next_symbol: &ParserSymbol) -> BTre
         if let Some(symbol) = g.rules[item.rule_index].1.get(item.dot_index) {
             let symbol = &g.symbols[*symbol];
             if symbol == next_symbol {
-                let mut item_copy = *item;
+                let mut item_copy = item.clone();
                 item_copy.dot_index += 1;
                 result.insert(item_copy);
             }
         }
     }
     closure(g, &result)
+}
+
+fn first(g: &Grammar, symbols: &Vec<ParserSymbol>) -> BTreeSet<ParserSymbol> {
+    let mut result = BTreeSet::new();
+    for symbol in symbols {
+        let mut first = g.first_map.get(symbol).unwrap_or(&BTreeSet::new()).clone();
+        let has_epsilon = first.remove(&ParserSymbol::Epsilon);
+        result.append(&mut first);
+        if !has_epsilon {
+            return result;
+        }
+    }
+
+    result.insert(ParserSymbol::Epsilon);
+
+    result
 }

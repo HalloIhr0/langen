@@ -313,8 +313,7 @@ fn convert_nfa_to_dfa(
     states.insert(new_start.clone(), 0);
     let mut active = vec![new_start];
 
-    while !active.is_empty() {
-        let current = active.pop().unwrap();
+    while let Some(current) = active.pop() {
         for symbol in get_possible_inputs(automaton, &current) {
             let next = epsilon_closure(automaton, &move_result(automaton, &current, symbol));
             if !states.contains_key(&next) {
@@ -414,8 +413,7 @@ fn epsilon_closure_single(
 ) -> BTreeSet<usize> {
     let mut result = BTreeSet::from([*state]);
     let mut active = vec![*state];
-    while !active.is_empty() {
-        let current = active.pop().unwrap();
+    while let Some(current) = active.pop() {
         for transition in &automaton.transitions {
             if transition.from_state == current
                 && transition.transition.is_none()
