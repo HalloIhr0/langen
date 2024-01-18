@@ -3,10 +3,10 @@ extern crate proc_macro;
 use std::collections::HashMap;
 
 use proc_macro::TokenStream;
-use proc_macro2::Ident;
 use quote::quote;
-use syn::ItemEnum;
+use syn::Ident;
 use syn::{self, Attribute};
+use syn::{ExprClosure, ItemEnum};
 
 mod codegen;
 mod finite_automaton;
@@ -25,47 +25,52 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
 
     let mut symbols = Vec::new();
     let mut rules = Vec::new();
+    let mut symbol_fields = HashMap::new();
 
     for variant in &base_enum.variants {
+        let fields = &variant.fields;
+        symbol_fields.insert(variant.ident.clone(), fields.clone());
         for attrib in &variant.attrs {
             match attrib.path.get_ident().unwrap().to_string().as_str() {
                 "token" => {
-                    let data = parse_token(attrib).unwrap_or_else(|| {
+                    let (regex, ignore, fun) = parse_token(attrib).unwrap_or_else(|| {
                         panic!(
-                            "Invalid \"token\" argument for \"{}\", expected token(\"<regex>\"[, ignore=<bool>])",
+                            "Invalid \"token\" argument for \"{}\", expected token(\"<regex>\"[, ignore=<bool>][, ast_fun=Fn(String)->Result<(fields), &str>])",
                             variant.ident
                         )
                     });
                     tokens.push(TokenVariant {
                         name: variant.ident.clone(),
-                        regex: data.0,
-                        ignore: data.1,
+                        fields: fields.clone(),
+                        regex,
+                        ignore,
+                        ast_fun: fun,
                     });
                     if !symbols.contains(&ParserSymbol::Terminal(variant.ident.clone())) {
                         symbols.push(ParserSymbol::Terminal(variant.ident.clone()));
                     }
                 }
                 "rule" => {
-                    let idents = parse_rule(attrib).unwrap_or_else(|| {
+                    let (idents, fun) = parse_rule(attrib).unwrap_or_else(|| {
                         panic!(
-                            "Invalid \"rule\" argument for \"{}\", expected token(ident, ident, ...)",
+                            "Invalid \"rule\" argument for \"{}\", expected token(ident, ident, ...[, ast_fun=Fn((ident1_params), (ident2_params), ...))->Result<(params), &str>])",
                             variant.ident
                         )
                     });
                     if !symbols.contains(&ParserSymbol::Symbol(variant.ident.clone())) {
                         symbols.push(ParserSymbol::Symbol(variant.ident.clone()));
                     }
-                    rules.push((symbols.len() - 1, idents));
+                    rules.push((symbols.len() - 1, idents, fun));
                 }
                 _ => continue,
             }
         }
     }
 
-    let automaton = create_finite_automaton(tokens);
+    let automaton = create_finite_automaton(&tokens);
 
     let mut rules_indexed = Vec::new();
-    for (r, l) in rules {
+    for (r, l, fun) in rules {
         let mut indexes = Vec::new();
         for ident in &l {
             let mut found = false;
@@ -84,7 +89,7 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
                 );
             }
         }
-        rules_indexed.push((r, indexes));
+        rules_indexed.push((r, indexes, fun));
     }
     let mut grammar = Grammar {
         symbols,
@@ -96,18 +101,18 @@ pub fn langen_macro_fn(input: TokenStream) -> TokenStream {
     let table = ParserTable::create(&mut grammar);
     // println!("{:#?}", table);
 
-    let scan_code = codegen::generate_scan(automaton);
-    let check_code = codegen::generate_check(&grammar, &table);
+    let scan_code = codegen::generate_scan(automaton, &tokens);
+    let parse_code = codegen::generate_parse(&grammar, &table, &symbol_fields);
     let gen = quote! {
         impl #name {
             #scan_code
-            #check_code
+            #parse_code
         }
     };
     gen.into()
 }
 
-fn parse_token(attrib: &Attribute) -> Option<(String, bool)> {
+fn parse_token(attrib: &Attribute) -> Option<(String, bool, Option<ExprClosure>)> {
     match attrib.parse_meta() {
         Ok(syn::Meta::List(list)) => {
             let regex = match list.nested.first() {
@@ -117,11 +122,19 @@ fn parse_token(attrib: &Attribute) -> Option<(String, bool)> {
                 }
             };
             let mut ignore = false;
+            let mut fun = None;
             for element in list.nested.iter() {
                 if let syn::NestedMeta::Meta(syn::Meta::NameValue(option)) = element {
                     match option.path.get_ident().unwrap().to_string().as_str() {
                         "ignore" => match &option.lit {
                             syn::Lit::Bool(value) => ignore = value.value(),
+                            _ => {
+                                return None;
+                            }
+                        },
+                        "ast_fun" => match &option.lit {
+                            // Having this as a string is a bit ugly, but works for now
+                            syn::Lit::Str(value) => fun = Some(syn::parse_str::<ExprClosure>(&value.value()).unwrap_or_else(|e| {panic!("Expected closure, found {} (for toxen with regex \"{}\"\nError is: {}", value.value(), regex, e)})),
                             _ => {
                                 return None;
                             }
@@ -132,22 +145,45 @@ fn parse_token(attrib: &Attribute) -> Option<(String, bool)> {
                     }
                 }
             }
-            Some((regex, ignore))
+            Some((regex, ignore, fun))
         }
         _ => None,
     }
 }
 
-fn parse_rule(attrib: &Attribute) -> Option<Vec<Ident>> {
+fn parse_rule(attrib: &Attribute) -> Option<(Vec<Ident>, ExprClosure)> {
     match attrib.parse_meta() {
         Ok(syn::Meta::List(list)) => {
             let mut idents = Vec::new();
+            let mut fun = None;
             for element in list.nested.iter() {
-                if let syn::NestedMeta::Meta(syn::Meta::Path(path)) = element {
-                    idents.push(path.get_ident().unwrap().clone())
+                match element {
+                    syn::NestedMeta::Meta(syn::Meta::Path(path)) => {
+                        idents.push(path.get_ident().unwrap().clone())
+                    }
+                    syn::NestedMeta::Meta(syn::Meta::NameValue(option)) => {
+                        if option.path.get_ident().unwrap().to_string().as_str() == "ast_fun" {
+                            match &option.lit {
+                                // Having this as a string is a bit ugly, but works for now
+                                syn::Lit::Str(value) => {
+                                    let closure = syn::parse_str::<ExprClosure>(&value.value()).unwrap_or_else(|e| {panic!("Expected closure, found {} (for rule with children \"{:?}\"\nError is: {}", value.value(), idents.iter().map(|e| e.to_string()).collect::<Vec<String>>(), e)});
+                                    fun = Some(closure);
+                                }
+                                _ => {
+                                    return None;
+                                }
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            Some(idents)
+            Some((
+                idents,
+                fun.unwrap_or_else(|| panic!("Every rule needs to have an \"ast_fun\"")),
+            ))
         }
         _ => None,
     }

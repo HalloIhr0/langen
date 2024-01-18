@@ -5,18 +5,21 @@ use proc_macro2::Ident;
 use regex_syntax::hir::Hir;
 use regex_syntax::hir::*;
 use regex_syntax::Parser;
+use syn::{ExprClosure, Fields};
 
 use crate::finite_automaton::*;
 
 pub struct TokenVariant {
     pub name: Ident,
+    pub fields: Fields,
     pub regex: String,
     pub ignore: bool,
+    pub ast_fun: Option<ExprClosure>,
 }
 
-pub fn create_finite_automaton(tokens: Vec<TokenVariant>) -> FiniteAutomaton<(), Option<char>> {
-    let nfa = create_nfa(&tokens);
-    convert_nfa_to_dfa(&nfa, &tokens)
+pub fn create_finite_automaton(tokens: &Vec<TokenVariant>) -> FiniteAutomaton<(), Option<char>> {
+    let nfa = create_nfa(tokens);
+    convert_nfa_to_dfa(&nfa, tokens)
 }
 
 fn create_nfa(tokens: &Vec<TokenVariant>) -> FiniteAutomaton<(), Option<char>> {

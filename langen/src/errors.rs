@@ -6,6 +6,8 @@ pub enum LexerError {
     IncompleteToken,
     #[error("Invalid character at index {0}")]
     InvalidChar(usize),
+    #[error("Error during Lexer: {0}")]
+    AstError(String),
 }
 
 #[derive(Error, Debug)]
@@ -14,4 +16,6 @@ pub enum ParserError {
     UnexpectedEnd,
     #[error("Invalid symbol at index {0}")]
     InvalidSymbol(usize),
+    #[error("Error during Parser: {0}")]
+    AstError(String),
 }

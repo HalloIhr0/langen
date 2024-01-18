@@ -4,11 +4,12 @@ use std::{
     hash::Hash,
 };
 
-use proc_macro2::Ident;
+use syn::ExprClosure;
+use syn::Ident;
 
 use crate::finite_automaton::*;
 
-#[derive(Debug, Clone, Ord, Eq, PartialOrd, PartialEq, Hash)]
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
 pub enum ParserSymbol {
     Symbol(Ident),
     Terminal(Ident),
@@ -30,8 +31,8 @@ impl ParserSymbol {
 
     pub fn is_terminal(&self) -> bool {
         match self {
-            ParserSymbol::Symbol(_) => false,
-            ParserSymbol::Terminal(_) => true,
+            ParserSymbol::Symbol(..) => false,
+            ParserSymbol::Terminal(..) => true,
             ParserSymbol::Eof => true,
             ParserSymbol::Epsilon => todo!(),
             ParserSymbol::Start => false,
@@ -53,7 +54,7 @@ impl Display for ParserSymbol {
 
 pub struct Grammar {
     pub symbols: Vec<ParserSymbol>,
-    pub rules: Vec<(usize, Vec<usize>)>,
+    pub rules: Vec<(usize, Vec<usize>, ExprClosure)>,
     pub first_map: HashMap<ParserSymbol, BTreeSet<ParserSymbol>>,
 }
 
@@ -71,7 +72,7 @@ impl Grammar {
                     .insert(symbol.clone());
             }
         }
-        for (from, to) in &self.rules {
+        for (from, to, _) in &self.rules {
             if to.is_empty() {
                 // Epsilon
                 self.first_map
@@ -83,7 +84,7 @@ impl Grammar {
         let mut changed = true;
         while changed {
             changed = false;
-            for (from, to) in &self.rules {
+            for (from, to, _) in &self.rules {
                 let mut broken = false; // This name is... interesting?... It's better than "breaked" tho
                 for symbol in to {
                     let symbol = &self.symbols[*symbol];
@@ -173,7 +174,7 @@ impl ParserTable {
 fn check_start(g: &Grammar) {
     let start_symbol = g.rules[0].0;
     let mut found_start = false;
-    for (from, to) in &g.rules {
+    for (from, to, _) in &g.rules {
         if to.contains(&start_symbol) {
             panic!("Rule for \"{}\" can't produce the start symbol\nConsider adding a new start symbol which hast a rule that converts it to the original start symbol", g.symbols[*from].get_ident().as_ref().unwrap());
         }
@@ -308,7 +309,7 @@ fn closure(g: &Grammar, items: &BTreeSet<Item>) -> BTreeSet<Item> {
         if let Some(symbol) = g.rules[current.rule_index].1.get(current.dot_index) {
             let next_symbol = &g.symbols[*symbol];
             if !next_symbol.is_terminal() {
-                for (rule_index, (rule_from, _)) in g.rules.iter().enumerate() {
+                for (rule_index, (rule_from, _, _)) in g.rules.iter().enumerate() {
                     if g.symbols.get(*rule_from).unwrap() == next_symbol {
                         let mut after = vec![];
                         for i in (current.dot_index + 1)..(g.rules[current.rule_index].1.len()) {

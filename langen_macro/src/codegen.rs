@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 
-use crate::{finite_automaton::FiniteAutomaton, parser::*};
+use crate::{finite_automaton::FiniteAutomaton, lexer::TokenVariant, parser::*};
 use proc_macro2::TokenStream;
 use quote::*;
+use syn::{Fields, Ident};
 
-pub fn generate_scan(dfa: FiniteAutomaton<(), Option<char>>) -> TokenStream {
+pub fn generate_scan(
+    dfa: FiniteAutomaton<(), Option<char>>,
+    tokens: &[TokenVariant],
+) -> TokenStream {
     let mut transitions = HashMap::new();
     let num_states = dfa.num_states;
     for transition in &dfa.transitions {
@@ -24,14 +28,50 @@ pub fn generate_scan(dfa: FiniteAutomaton<(), Option<char>>) -> TokenStream {
         identifiers.push(format_ident!("c{:X}", *c as u32));
         tables.push(quote! {#(#t),*});
     }
-    let mut end_states = Vec::new();
-    let mut end_tokens = Vec::new();
+    let mut end_states_code = Vec::new();
     let mut end_states_ignored = Vec::new();
     for state in dfa.end_states {
         match state.token {
             Some(token) => {
-                end_states.push(state.state);
-                end_tokens.push(token);
+                let span = token.span();
+                let token = tokens.iter().find(|t| t.name == token).expect(
+                    "The program shouldn't be able to just make these things up (hopefully)",
+                );
+                let end_state = state.state;
+                let end_token = &token.name;
+                end_states_code.push(match &token.fields {
+                    syn::Fields::Named(fields) => {
+                        let closure = token.ast_fun.as_ref().unwrap_or_else(|| panic!("{} has unnamed fields, but doesn't have a closure", token.name));
+                        let mut field_names = vec![];
+                        let mut names = vec![];
+                        for (i, field) in fields.named.iter().enumerate() {
+                            names.push(format_ident!("f{}", i));
+                            field_names.push(field.ident.as_ref().expect("This should be named"))
+                        }
+                        quote_spanned!(span=>
+                            #end_state => {
+                                let (#(#names),*,) = ((#closure)(current_text)).map_err(|e: String| langen::errors::LexerError::AstError(e))?;
+                                tokens.push(Self::#end_token{#(#field_names: #names),*});
+                            }
+                        )
+                    },
+                    syn::Fields::Unnamed(fields) => {
+                        let closure = token.ast_fun.as_ref().unwrap_or_else(|| panic!("{} has unnamed fields, but doesn't have a closure", token.name));
+                        let mut names = vec![];
+                        for i in 0..fields.unnamed.len() {
+                            names.push(format_ident!("f{}", i));
+                        }
+                        quote_spanned!(span=>
+                            #end_state => {
+                                let (#(#names),*,) = ((#closure)(current_text)).map_err(|e: String| langen::errors::LexerError::AstError(e))?;
+                                tokens.push(Self::#end_token(#(#names),*));
+                            }
+                        )
+                    },
+                    syn::Fields::Unit => quote_spanned!(span=>
+                        #end_state => tokens.push(Self::#end_token)
+                    ),
+                });
             }
             None => {
                 end_states_ignored.push(state.state);
@@ -41,10 +81,12 @@ pub fn generate_scan(dfa: FiniteAutomaton<(), Option<char>>) -> TokenStream {
     let start_state = dfa.start_state;
     quote! {
         pub fn scan(input: &str) -> Result<Vec<Self>, langen::errors::LexerError> {
+            use std::error::Error;
             #( static #identifiers: [usize; #num_states]  = [#tables]; )*
             let mut tokens = Vec::new();
             let mut last = #num_states;
             let mut current = #start_state;
+            let mut current_text = String::new();
             for (i, c) in input.chars().enumerate() {
                 current = match c {
                     #( #chars => #identifiers[current], )*
@@ -52,19 +94,21 @@ pub fn generate_scan(dfa: FiniteAutomaton<(), Option<char>>) -> TokenStream {
                 };
                 if current == #num_states {
                     match last {
-                        #( #end_states => tokens.push(Self::#end_tokens), )*
+                        #( #end_states_code, )*
                         #( #end_states_ignored => {}, )*
                     _ => {return Err(langen::errors::LexerError::InvalidChar(i-1))}
                     };
+                    current_text = String::new();
                     current = match c {
                         #( #chars => #identifiers[#start_state], )*
                         _ => {return Err(langen::errors::LexerError::InvalidChar(i))}
                     };
                 }
+                current_text.push(c);
                 last = current;
             }
             match current {
-                #( #end_states => tokens.push(Self::#end_tokens), )*
+                #( #end_states_code, )*
                 #( #end_states_ignored => {}, )*
             _ => {return Err(langen::errors::LexerError::IncompleteToken)}
             };
@@ -73,30 +117,43 @@ pub fn generate_scan(dfa: FiniteAutomaton<(), Option<char>>) -> TokenStream {
     }
 }
 
-pub fn generate_check(grammar: &Grammar, table: &ParserTable) -> TokenStream {
+pub fn generate_parse(
+    grammar: &Grammar,
+    table: &ParserTable,
+    symbol_fields: &HashMap<Ident, Fields>,
+) -> TokenStream {
     let mut actions = vec![HashMap::new(); table.num_states];
     let mut eof_actions = HashMap::new();
     for k in table.action_table.keys() {
         match &k.1 {
-            ParserSymbol::Symbol(ident) => {
-                actions[k.0].insert(ident, generate_parser_action(grammar, table, k))
-            }
-            ParserSymbol::Terminal(ident) => {
-                actions[k.0].insert(ident, generate_parser_action(grammar, table, k))
-            }
-            ParserSymbol::Eof => eof_actions.insert(k.0, generate_parser_action(grammar, table, k)),
+            ParserSymbol::Symbol(ident) => actions[k.0].insert(
+                ident,
+                generate_parser_action(grammar, table, k, symbol_fields),
+            ),
+            ParserSymbol::Terminal(ident) => actions[k.0].insert(
+                ident,
+                generate_parser_action(grammar, table, k, symbol_fields),
+            ),
+            ParserSymbol::Eof => eof_actions.insert(
+                k.0,
+                generate_parser_action(grammar, table, k, symbol_fields),
+            ),
             ParserSymbol::Epsilon => panic!(),
             ParserSymbol::Start => panic!(),
         };
     }
     let mut actions_keys = vec![];
     let mut actions_values = vec![];
-    for i in 0..table.num_states {
+    for (i, action) in actions.iter().enumerate() {
         actions_keys.push(i);
         let mut idents = vec![];
         let mut codes = vec![];
-        for (ident, code) in &actions[i] {
-            idents.push(ident);
+        for (ident, code) in action {
+            idents.push(match symbol_fields[*ident] {
+                Fields::Named(_) => quote!(#ident{..}),
+                Fields::Unnamed(_) => quote!(#ident(..)),
+                Fields::Unit => quote!(#ident),
+            });
             codes.push(code);
         }
         actions_values.push(quote! {
@@ -114,18 +171,20 @@ pub fn generate_check(grammar: &Grammar, table: &ParserTable) -> TokenStream {
     }
 
     quote! {
-        pub fn check(input: Vec<Self>) -> Result<(), langen::errors::ParserError> {
+        pub fn parse(input: Vec<Self>) -> Result<(), langen::errors::ParserError> {
+            use std::error::Error;
             let mut state_stack = vec![0usize];
             let mut symbol_stack = vec![];
             let mut i = 0usize;
+            let mut iter = input.iter();
             let mut eof = false;
-            let mut current = match input.get(i){
+            let mut current = match iter.next() {
                 Some(x) => x,
                 None => {return Err(langen::errors::ParserError::UnexpectedEnd);},
             };
             loop {
                 let state = *state_stack.last().unwrap();
-                println!("{} {:?}({}) {:?} {:?}", state, current, i, state_stack, symbol_stack);
+                //println!("{} {:?}({}) {:?} {:?}", state, current, i, state_stack, symbol_stack);
                 if eof {
                     match state {
                         #( #eof_keys => {#eof_values}, )*
@@ -146,27 +205,100 @@ fn generate_parser_action(
     grammar: &Grammar,
     table: &ParserTable,
     state: &(usize, ParserSymbol),
+    symbol_fields: &HashMap<Ident, Fields>,
 ) -> TokenStream {
     match table.action_table.get(state).expect("b") {
         crate::parser::Action::Shift(next_state) => {
-            let token = state.1.get_ident().unwrap();
             quote! {
-                println!("Shift({})", #next_state);
                 state_stack.push(#next_state);
-                symbol_stack.push(Self::#token);
+                symbol_stack.push(current.clone());
                 i+=1;
-                if let Some(x) = input.get(i) {
+                if let Some(x) = iter.next() {
                     current = x;
                 } else {
                     eof = true;
                 }
+                continue;
             }
         }
         crate::parser::Action::Reduce(rule_index) => {
             let num_removed = grammar.rules[*rule_index].1.len();
-            let token = grammar.symbols[grammar.rules[*rule_index].0]
+            let to_ident = grammar.symbols[grammar.rules[*rule_index].0]
                 .get_ident()
                 .unwrap();
+            let from_idents = grammar.rules[*rule_index]
+                .1
+                .iter()
+                .map(|e| &grammar.symbols[*e]);
+            let span = to_ident.span();
+            let mut get_values_code = vec![];
+            let mut var_names = vec![];
+            for (i, ident) in from_idents.enumerate() {
+                let name = ident
+                    .get_ident()
+                    .expect("Everything at this stage has an ident");
+                let fields = &symbol_fields[&name];
+                let var_name = format_ident!("v{}", i);
+                var_names.push(var_name.clone());
+                get_values_code.push(match fields {
+                    Fields::Named(fields) => {
+                        let mut field_names = vec![];
+                        let mut names = vec![];
+                        for (i, field) in fields.named.iter().enumerate() {
+                            names.push(format_ident!("f{}", i));
+                            field_names.push(field.ident.as_ref().expect("This should be named"))
+                        }
+                        quote_spanned!(span=>
+                            let #var_name = if let Self::#name{#(#field_names: #names),*} = symbol_stack.pop().expect("This shouldn't be empty") {
+                                (#(#names),*,)
+                            } else {
+                                unreachable!()
+                            }
+                        )
+                    },
+                    Fields::Unnamed(fields) => {
+                        let mut names = vec![];
+                        for i in 0..fields.unnamed.len() {
+                            names.push(format_ident!("f{}", i));
+                        }
+                        quote_spanned!(span=>
+                            let #var_name = if let Self::#name(#(#names),*) = symbol_stack.pop().expect("This shouldn't be empty") {
+                                (#(#names),*,)
+                            } else {
+                                unreachable!()
+                            }
+                        )
+                    },
+                    Fields::Unit => quote_spanned!(span=>
+                        let #var_name = if let Self::#name = symbol_stack.pop().expect("This shouldn't be empty") {
+                            ()
+                        } else {
+                            unreachable!()
+                        }
+                    ),
+                });
+            }
+            get_values_code.reverse();
+
+            let mut result_names = vec![];
+            for i in 0..symbol_fields[&to_ident].len() {
+                result_names.push(format_ident!("r{}", i))
+            }
+
+            let new_symbol = match &symbol_fields[&to_ident] {
+                Fields::Named(fields) => {
+                    let field_names = fields
+                        .named
+                        .iter()
+                        .map(|f| f.ident.as_ref().expect("This is named"));
+                    quote_spanned!(span=> Self::#to_ident{#(#field_names: #result_names),*})
+                }
+                Fields::Unnamed(_) => quote_spanned!(span=> Self::#to_ident(#(#result_names),*)),
+                Fields::Unit => quote_spanned!(span=> Self::#to_ident),
+            };
+
+            let closure = &grammar.rules[*rule_index].2;
+
             let mut goto_results_keys = vec![];
             let mut goto_results_values = vec![];
             for (k, v) in &table.goto_table {
@@ -175,17 +307,20 @@ fn generate_parser_action(
                     goto_results_values.push(v);
                 }
             }
-            quote! {
-                println!("Reduce({}), Goto()", #rule_index);
+            quote_spanned! {span=>
                 state_stack.truncate(state_stack.len()-#num_removed);
-                symbol_stack.truncate(symbol_stack.len()-#num_removed);
-                symbol_stack.push(Self::#token);
+                #(#get_values_code);*;
+                let (#(#result_names),*,) = ((#closure)(#(#var_names),*)).map_err(|e: String| langen::errors::ParserError::AstError(e))?;
+                symbol_stack.push(#new_symbol);
                 state_stack.push(match *state_stack.last().unwrap() {
                     #( #goto_results_keys => #goto_results_values, )*
                     _ => {return Err(langen::errors::ParserError::InvalidSymbol(i))}
                 });
             }
         }
-        crate::parser::Action::Accept => quote! {return Ok(());},
+        crate::parser::Action::Accept => quote! {
+            println!("{:?}", symbol_stack);
+            return Ok(());
+        },
     }
 }

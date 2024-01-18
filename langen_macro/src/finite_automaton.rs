@@ -1,6 +1,6 @@
 use std::fmt;
 
-use proc_macro2::Ident;
+use syn::Ident;
 
 pub struct StateTransition<T> {
     pub from_state: usize,
