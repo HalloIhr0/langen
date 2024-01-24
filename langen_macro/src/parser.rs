@@ -164,36 +164,28 @@ pub struct ParserTable {
 
 impl ParserTable {
     pub fn create(g: &mut Grammar) -> Self {
-        check_start(g);
+        create_start(g);
         let graph = generate_graph(g);
         // println!("{graph}");
         create_table(g, &graph)
     }
 }
 
-fn check_start(g: &Grammar) {
-    let start_symbol = g.rules[0].0;
-    let mut found_start = false;
-    for (from, to, _) in &g.rules {
-        if to.contains(&start_symbol) {
-            panic!("Rule for \"{}\" can't produce the start symbol\nConsider adding a new start symbol which hast a rule that converts it to the original start symbol", g.symbols[*from].get_ident().as_ref().unwrap());
-        }
-        if *from == start_symbol {
-            if found_start {
-                panic!("Can't have two or more rules for the start symbol\nConsider adding a new start symbol which hast a rule that converts it to the original start symbol");
-            } else {
-                found_start = true;
-            }
-        }
-    }
+fn create_start(g: &mut Grammar) {
+    g.symbols.push(ParserSymbol::Start);
+    g.rules.push((
+        g.symbols.len() - 1,
+        vec![g.rules[0].0],
+        syn::parse_str::<ExprClosure>("|| panic!()").expect("It's a constant str"),
+    ));
 }
 
-/// This function assumes that the first rule is always the starting rule
+/// This function assumes that the last rule is always the starting rule
 fn generate_graph(g: &Grammar) -> FiniteAutomaton<BTreeSet<Item>, ParserSymbol> {
     let start = closure(
         g,
         &BTreeSet::from([Item {
-            rule_index: 0,
+            rule_index: g.rules.len() - 1,
             dot_index: 0,
             lookahead: BTreeSet::from([ParserSymbol::Eof]),
         }]),
@@ -245,7 +237,7 @@ fn generate_graph(g: &Grammar) -> FiniteAutomaton<BTreeSet<Item>, ParserSymbol> 
     result
 }
 
-/// This function assumes that the first rule is always the starting rule
+/// This function assumes that the last rule is always the starting rule
 fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, ParserSymbol>) -> ParserTable {
     let mut action_table = HashMap::new();
     let mut goto_table = HashMap::new();
@@ -268,7 +260,9 @@ fn create_table(g: &Grammar, graph: &FiniteAutomaton<BTreeSet<Item>, ParserSymbo
     }
     for (i, state) in graph.state_info.iter().enumerate() {
         for item in state {
-            if item.rule_index == 0 && item.dot_index == g.rules[0].1.len() {
+            if item.rule_index == g.rules.len() - 1
+                && item.dot_index == g.rules.last().expect("Should have rules").1.len()
+            {
                 action_table.insert((i, ParserSymbol::Eof), Action::Accept);
                 continue;
             }
