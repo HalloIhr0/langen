@@ -1,6 +1,6 @@
 [package]
 name = "langen_macro"
-version = "1.0.0"
+version = "2.0.0"
 edition = "2021"
 license = "MIT"
 description = "A tool to create programming languages"
@@ -10,11 +10,11 @@ readme = "../README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[dependencies]
-quote = "1.0.35"
-regex-syntax = "0.6.28"
-syn = { version = "1.0.109", features = ["full", "extra-traits"] }
-proc-macro2 = "1.0.51"
-
 [lib]
 proc-macro = true
+
+[dependencies]
+syn = { version = "2.0", features = ["parsing", "derive", "extra-traits"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+regex-syntax = "0.8"
