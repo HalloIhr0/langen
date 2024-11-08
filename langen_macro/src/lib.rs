@@ -49,6 +49,7 @@ pub fn langen_derive(input: TokenStream) -> TokenStream {
         }
 
         let automaton = Automaton::from_tokens(&tokens);
+        let automaton = automaton.to_dfa();
         panic!("{}", automaton.to_graphvis());
     } else {
         panic!("Langen can only be used on enum");

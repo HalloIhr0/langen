@@ -1,9 +1,11 @@
+use std::{collections::HashSet, vec};
+
 use regex_syntax::hir::{Class, Hir};
 use syn::Ident;
 
 use crate::Token;
 
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 enum Symbol {
     // TODO
     // Range { start: char, end: char },
@@ -61,6 +63,56 @@ impl Automaton {
                 symbol: Symbol::Epsilon,
             });
         }
+        automaton
+    }
+
+    pub fn to_dfa(self) -> Self {
+        // Powerset
+        let start = self.closure(&HashSet::from([0]));
+        let mut automaton = Self {
+            num_states: 1,
+            end_states: if let Some(end_state) = self.get_end_state(&start) {
+                vec![EndState {
+                    state: 0,
+                    token: end_state.token.clone(),
+                }]
+            } else {
+                vec![]
+            },
+            transitions: vec![],
+        };
+        let mut states = vec![start];
+        let mut queue = vec![0];
+
+        while let Some(i) = queue.pop() {
+            for symbol in self.get_possible_symbols(&states[i]) {
+                let connected = self.closure(&self.transition(&states[i], symbol));
+                if let Some(new_i) = states.iter().position(|e| *e == connected) {
+                    automaton.transitions.push(Transition {
+                        from: i,
+                        to: new_i,
+                        symbol: Symbol::Literal(symbol),
+                    });
+                } else {
+                    let new_i = automaton.num_states;
+                    automaton.transitions.push(Transition {
+                        from: i,
+                        to: new_i,
+                        symbol: Symbol::Literal(symbol),
+                    });
+                    if let Some(end_state) = self.get_end_state(&connected) {
+                        automaton.end_states.push(EndState {
+                            state: new_i,
+                            token: end_state.token.clone(),
+                        });
+                    }
+                    states.push(connected);
+                    queue.push(new_i);
+                    automaton.num_states += 1;
+                }
+            }
+        }
+
         automaton
     }
 
@@ -302,5 +354,52 @@ impl Automaton {
         }
         self.num_states += other.num_states;
         offset
+    }
+
+    fn get_end_state(&self, states: &HashSet<usize>) -> Option<&EndState> {
+        self.end_states
+            .iter()
+            .find(|end_state| states.contains(&end_state.state))
+    }
+
+    fn get_possible_symbols(&self, states: &HashSet<usize>) -> HashSet<char> {
+        let mut result = HashSet::new();
+        for transition in &self.transitions {
+            if states.contains(&transition.from) {
+                // This should always be called on closured states, so epsilon can be ignored
+                if let Symbol::Literal(c) = transition.symbol {
+                    result.insert(c);
+                }
+            }
+        }
+        result
+    }
+
+    fn transition(&self, states: &HashSet<usize>, symbol: char) -> HashSet<usize> {
+        let mut result = HashSet::new();
+        for transition in &self.transitions {
+            // This should always be called on closured states, so epsilon can be ignored
+            if states.contains(&transition.from) && transition.symbol == Symbol::Literal(symbol) {
+                result.insert(transition.to);
+            }
+        }
+        result
+    }
+
+    fn closure(&self, states: &HashSet<usize>) -> HashSet<usize> {
+        let mut result = HashSet::new();
+        let mut queue = states.iter().copied().collect::<Vec<_>>();
+        while let Some(state) = queue.pop() {
+            result.insert(state);
+            for transition in &self.transitions {
+                if transition.from == state && transition.symbol == Symbol::Epsilon {
+                    let to = transition.to;
+                    if !(result.contains(&to) || queue.contains(&to)) {
+                        queue.push(to);
+                    }
+                }
+            }
+        }
+        result
     }
 }
