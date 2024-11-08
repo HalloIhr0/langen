@@ -122,21 +122,64 @@ pub fn generate_parse(
     table: &ParserTable,
     symbol_fields: &HashMap<Ident, Fields>,
 ) -> TokenStream {
+    let start = &grammar.symbols[grammar.rules[0].0]
+        .get_ident()
+        .expect("Has to be a rule");
+    let (return_type, return_code) = match &symbol_fields[start] {
+        Fields::Named(fields) => {
+            let types = fields.named.iter().map(|f| f.ty.clone());
+            let mut field_names = vec![];
+            let mut names = vec![];
+            for (i, field) in fields.named.iter().enumerate() {
+                names.push(format_ident!("f{}", i));
+                field_names.push(field.ident.as_ref().expect("This should be named"))
+            }
+            (
+                quote!((#(#types),*,)),
+                quote!(
+                    return Ok(if let Some(Self::#start{#(#field_names: #names),*}) = symbol_stack.pop() {
+                        (#(#names),*,)
+                    } else {
+                        unreachable!()
+                    });
+                ),
+            )
+        }
+        Fields::Unnamed(fields) => {
+            let types = fields.unnamed.iter().map(|f| f.ty.clone());
+            let mut names = vec![];
+            for i in 0..fields.unnamed.len() {
+                names.push(format_ident!("f{}", i));
+            }
+            (
+                quote!((#(#types),*,)),
+                quote!(
+                    return Ok(if let Some(Self::#start(#(#names),*)) = symbol_stack.pop() {
+                        (#(#names),*,)
+                    } else {
+                        unreachable!()
+                    });
+                ),
+            )
+        }
+        Fields::Unit => (quote!(()), quote!(return Ok(());)),
+    };
+
     let mut actions = vec![HashMap::new(); table.num_states];
     let mut eof_actions = HashMap::new();
     for k in table.action_table.keys() {
         match &k.1 {
             ParserSymbol::Symbol(ident) => actions[k.0].insert(
                 ident,
-                generate_parser_action(grammar, table, k, symbol_fields),
+                generate_parser_action(grammar, table, k, symbol_fields, &return_code),
             ),
             ParserSymbol::Terminal(ident) => actions[k.0].insert(
                 ident,
-                generate_parser_action(grammar, table, k, symbol_fields),
+                generate_parser_action(grammar, table, k, symbol_fields, &return_code),
             ),
             ParserSymbol::Eof => eof_actions.insert(
                 k.0,
-                generate_parser_action(grammar, table, k, symbol_fields),
+                generate_parser_action(grammar, table, k, symbol_fields, &return_code),
             ),
             ParserSymbol::Epsilon => panic!(),
             ParserSymbol::Start => panic!(),
@@ -171,7 +214,7 @@ pub fn generate_parse(
     }
 
     quote! {
-        pub fn parse(input: Vec<Self>) -> Result<(), langen::errors::ParserError> {
+        pub fn parse(input: Vec<Self>) -> Result<#return_type, langen::errors::ParserError> {
             use std::error::Error;
             let mut state_stack = vec![0usize];
             let mut symbol_stack = vec![];
@@ -206,6 +249,7 @@ fn generate_parser_action(
     table: &ParserTable,
     state: &(usize, ParserSymbol),
     symbol_fields: &HashMap<Ident, Fields>,
+    return_code: &TokenStream,
 ) -> TokenStream {
     match table.action_table.get(state).expect("b") {
         crate::parser::Action::Shift(next_state) => {
@@ -249,7 +293,7 @@ fn generate_parser_action(
                             field_names.push(field.ident.as_ref().expect("This should be named"))
                         }
                         quote_spanned!(span=>
-                            let #var_name = if let Self::#name{#(#field_names: #names),*} = symbol_stack.pop().expect("This shouldn't be empty") {
+                            let #var_name = if let Some(Self::#name{#(#field_names: #names),*}) = symbol_stack.pop() {
                                 (#(#names),*,)
                             } else {
                                 unreachable!()
@@ -262,7 +306,7 @@ fn generate_parser_action(
                             names.push(format_ident!("f{}", i));
                         }
                         quote_spanned!(span=>
-                            let #var_name = if let Self::#name(#(#names),*) = symbol_stack.pop().expect("This shouldn't be empty") {
+                            let #var_name = if let Some(Self::#name(#(#names),*)) = symbol_stack.pop() {
                                 (#(#names),*,)
                             } else {
                                 unreachable!()
@@ -270,7 +314,7 @@ fn generate_parser_action(
                         )
                     },
                     Fields::Unit => quote_spanned!(span=>
-                        let #var_name = if let Self::#name = symbol_stack.pop().expect("This shouldn't be empty") {
+                        let #var_name = if let Some(Self::#name) = symbol_stack.pop() {
                             ()
                         } else {
                             unreachable!()
@@ -319,8 +363,7 @@ fn generate_parser_action(
             }
         }
         crate::parser::Action::Accept => quote! {
-            println!("{:?}", symbol_stack);
-            return Ok(());
+            #return_code
         },
     }
 }
