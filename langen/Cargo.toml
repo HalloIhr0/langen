@@ -13,3 +13,4 @@ readme = "../README.md"
 [dependencies]
 langen_macro = { path = "../langen_macro", version="2.0.0" }
 thiserror = "2.0"
+regex-automata = { version = "0.4", featrues = [] }
