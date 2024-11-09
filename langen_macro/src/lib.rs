@@ -1,24 +1,42 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use regex_automata::dfa::dense;
-use syn::{Data, DeriveInput, Ident, LitStr};
+use syn::{
+    parse::Parse, spanned::Spanned, token::Comma, Data, DeriveInput, Expr, ExprClosure, Fields,
+    LitStr,
+};
 
-#[proc_macro_derive(Tokens, attributes(token))]
+#[proc_macro_derive(Tokens, attributes(ignored, token))]
 pub fn langen_derive(input: TokenStream) -> TokenStream {
     let input: DeriveInput = syn::parse(input).unwrap();
     if let Data::Enum(data) = input.data {
         let name = input.ident;
 
         let mut token_indices = vec![];
-        let mut token_idents = vec![];
+        let mut token_code = vec![];
         let mut token_patterns = vec![];
 
+        for re in input.attrs.iter().filter_map(|attr| {
+            if attr.path().is_ident("ignored") {
+                let t: LitStr = attr.parse_args().unwrap_or_else(|_| {
+                    panic!("ignored argument for \"{}\" must be string literal", name)
+                });
+                Some(t)
+            } else {
+                None
+            }
+        }) {
+            token_indices.push(token_code.len());
+            token_code.push(quote! {continue;});
+            token_patterns.push(re.value());
+        }
+
         for variant in data.variants {
-            if let Some(r) = variant.attrs.iter().find_map(|attr| {
+            for input in variant.attrs.iter().filter_map(|attr| {
                 if attr.path().is_ident("token") {
-                    let t: LitStr = attr.parse_args().unwrap_or_else(|_| {
+                    let t: TokenInput = attr.parse_args().unwrap_or_else(|e| {
                         panic!(
-                            "token argument for \"{}\" must be string literal",
+                            "Invalid arguments for token argument for \"{}\": {e}",
                             variant.ident
                         )
                     });
@@ -27,9 +45,41 @@ pub fn langen_derive(input: TokenStream) -> TokenStream {
                     None
                 }
             }) {
-                token_indices.push(token_idents.len());
-                token_idents.push(variant.ident);
-                token_patterns.push(r.value());
+                let ident = &variant.ident;
+
+                token_indices.push(token_code.len());
+
+                token_code.push(match input.fun {
+                    Some(closure) => {
+                        if let Fields::Unnamed(_fields) = &variant.fields {
+                            quote! {
+                                let r = (#closure)(&input[start..end]);
+                                match r {
+                                    Ok(v) => Self::#ident(v),
+                                    Err(e) => {
+                                        return Err(langen::LexerError::ProcessError(Box::new(e), span))
+                                    }
+                                }
+                            }
+                        } else {
+                            panic!(
+                                "Variant \"{}\" must be one-length unnamed when having process function",
+                                variant.ident
+                            )
+                        }
+                    }
+                    None => {
+                        if let Fields::Unit = variant.fields {
+                            quote! {Self::#ident}
+                        } else {
+                            panic!(
+                                "Non-unit token variant \"{}\" must have process function",
+                                variant.ident
+                            )
+                        }
+                    }
+                });
+                token_patterns.push(input.re.value());
             }
         }
 
@@ -41,7 +91,7 @@ pub fn langen_derive(input: TokenStream) -> TokenStream {
 
         quote! {
             impl langen::Tokens for #name {
-                fn scan_bytes(input: &[u8]) -> Result<Vec<(Self, langen::Span)>, langen::LexerError> {
+                fn scan(input: &str) -> Result<Vec<(Self, langen::Span)>, langen::LexerError> {
                     const DFA: &langen::regex_automata::util::wire::AlignAs<[u8], u32> = &langen::regex_automata::util::wire::AlignAs {
                         _align: [],
                         #[cfg(target_endian = "big")]
@@ -61,13 +111,16 @@ pub fn langen_derive(input: TokenStream) -> TokenStream {
                         re_input.set_start(current);
                         // Input should always be fine
                         if let Some(m) = dfa.try_search_fwd(&re_input).expect("Regex Error") {
-                            let span = langen::Span::new(current, m.offset());
+                            let start = current;
                             current = m.offset();
+                            let end = current;
 
+                            let span = langen::Span::new(start, end);
                             let token = match m.pattern().as_usize() {
-                                #(#token_indices => Self::#token_idents,)*
+                                #(#token_indices => {#token_code})*
                                 _ => {unreachable!("Every pattern has to come from a regex")}
                             };
+
                             tokens.push((token, span));
                         } else {
                             return Err(langen::LexerError::NoToken(current));
@@ -80,5 +133,32 @@ pub fn langen_derive(input: TokenStream) -> TokenStream {
         }.into()
     } else {
         panic!("Langen can only be used on enum");
+    }
+}
+
+struct TokenInput {
+    re: LitStr,
+    fun: Option<ExprClosure>,
+}
+
+impl Parse for TokenInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            re: input.parse()?,
+            fun: match input.parse::<Comma>() {
+                Ok(_) => {
+                    let expr: Expr = input.parse()?;
+                    if let Expr::Closure(closure) = expr {
+                        Some(closure)
+                    } else {
+                        return Err(syn::Error::new(
+                            expr.span(),
+                            "Second argument to token must be closure",
+                        ));
+                    }
+                }
+                Err(_) => None,
+            },
+        })
     }
 }
