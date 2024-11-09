@@ -1,24 +1,15 @@
-use lexer_automaton::Automaton;
 use proc_macro::TokenStream;
-use regex_syntax::hir::Hir;
+use regex_automata::dfa::dense;
 use syn::{Data, DeriveInput, Ident, LitStr};
-
-mod lexer_automaton;
-
-#[derive(Debug)]
-struct Token {
-    ident: Ident,
-    regex: Hir,
-}
 
 #[proc_macro_derive(Langen, attributes(token))]
 pub fn langen_derive(input: TokenStream) -> TokenStream {
     let input: DeriveInput = syn::parse(input).unwrap();
     if let Data::Enum(data) = input.data {
         let name = input.ident;
-        let regex_parser = regex_syntax::ParserBuilder::default();
 
-        let mut tokens = vec![];
+        let mut token_idents = vec![];
+        let mut token_patterns = vec![];
 
         for variant in data.variants {
             if let Some(r) = variant.attrs.iter().find_map(|attr| {
@@ -34,23 +25,16 @@ pub fn langen_derive(input: TokenStream) -> TokenStream {
                     None
                 }
             }) {
-                let regex = regex_parser.build().parse(&r.value()).unwrap_or_else(|_| {
-                    panic!(
-                        "Invalid regex \"{}\" in token \"{}\"",
-                        r.value(),
-                        variant.ident
-                    )
-                });
-                tokens.push(Token {
-                    ident: variant.ident,
-                    regex,
-                });
+                token_idents.push(variant.ident);
+                token_patterns.push(r.value());
             }
         }
 
-        let automaton = Automaton::from_tokens(&tokens);
-        let automaton = automaton.to_dfa();
-        panic!("{}", automaton.to_graphvis());
+        let dfa = dense::DFA::new_many(&token_patterns).expect("Couldn't build regex automaton");
+        let (le_dfa_bytes, _) = dfa.to_bytes_little_endian();
+        let (be_dfa_bytes, _) = dfa.to_bytes_big_endian();
+
+        todo!()
     } else {
         panic!("Langen can only be used on enum");
     }
