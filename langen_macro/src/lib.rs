@@ -110,7 +110,9 @@ pub fn langen_derive(input: TokenStream) -> TokenStream {
                     while current != input.len() {
                         re_input.set_start(current);
                         // Input should always be fine
+                        use langen::regex_automata::dfa::Automaton;
                         if let Some(m) = dfa.try_search_fwd(&re_input).expect("Regex Error") {
+                            // println!("{} {:?}", current, m);
                             let start = current;
                             current = m.offset();
                             let end = current;

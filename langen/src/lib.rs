@@ -35,3 +35,14 @@ pub enum LexerError {
     #[error("Something went wrong during processing {1}: {0}")]
     ProcessError(Box<dyn Error>, Span),
 }
+
+#[derive(Debug)]
+pub struct NoErr;
+
+impl Display for NoErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "No error")
+    }
+}
+
+impl Error for NoErr {}
