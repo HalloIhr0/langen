@@ -1,6 +1,6 @@
 use std::{error::Error, fmt::Display};
 
-pub use langen_macro::Tokens;
+pub use langen_macro::{Tokens, Grammar};
 pub use regex_automata;
 
 #[derive(Debug)]

@@ -1,13 +1,14 @@
+use std::collections::HashSet;
+
 use proc_macro::TokenStream;
 use quote::quote;
 use regex_automata::dfa::dense;
 use syn::{
-    parse::Parse, spanned::Spanned, token::Comma, Data, DeriveInput, Expr, ExprClosure, Fields,
-    LitStr,
+    parse::Parse, spanned::Spanned, token::Comma, Data, DeriveInput, Expr, ExprClosure, Fields, Ident, LitStr
 };
 
 #[proc_macro_derive(Tokens, attributes(ignored, token))]
-pub fn langen_derive(input: TokenStream) -> TokenStream {
+pub fn tokens_derive(input: TokenStream) -> TokenStream {
     let input: DeriveInput = syn::parse(input).unwrap();
     if let Data::Enum(data) = input.data {
         let name = input.ident;
@@ -162,5 +163,78 @@ impl Parse for TokenInput {
                 Err(_) => None,
             },
         })
+    }
+}
+
+#[proc_macro_derive(Grammar, attributes(rule))]
+pub fn grammar_derive(input: TokenStream) -> TokenStream {
+    let input: DeriveInput = syn::parse(input).unwrap();
+    if let Data::Enum(data) = input.data {
+        let name = input.ident;
+
+        let rules = vec![];
+        let non_terminals = vec![];
+
+        for variant in data.variants {
+            let mut has_rule = false;
+            for input in variant.attrs.iter().filter_map(|attr| {
+                if attr.path().is_ident("rule") {
+                    has_rule = true;
+                    let t: RuleInput = attr.parse_args().unwrap_or_else(|e| {
+                        panic!(
+                            "Invalid arguments for rule argument for \"{}\": {e}",
+                            variant.ident
+                        )
+                    });
+                    Some(t)
+                } else {
+                    None
+                }
+            }) {
+
+            }
+
+            if !has_rule {
+                non_terminals.push((variant.ident.clone(), matches!(variant.fields, Fields::Unnamed(_))));
+            }
+        }
+                
+
+        quote! {
+            impl langen::Tokens for #name {
+                fn scan(input: &str) -> Result<Vec<(Self, langen::Span)>, langen::LexerError> {
+                    
+                }
+            }
+        }.into()
+    } else {
+        panic!("Langen can only be used on enum");
+    }
+}
+
+struct RuleInput {
+    fun: ExprClosure,
+    parts: Vec<Ident>,
+}
+
+impl Parse for RuleInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let expr: Expr = input.parse()?;
+        let fun = if let Expr::Closure(closure) = expr {
+            closure
+        } else {
+            return Err(syn::Error::new(
+                expr.span(),
+                "First argument to rule must be closure",
+            ));
+        };
+        let mut parts = vec![];
+        loop {
+            if input.parse::<Comma>().is_err() {
+                break;
+            }
+            parts.push(input.parse()?);
+        }
+        Ok(Self { fun, parts })
     }
 }
