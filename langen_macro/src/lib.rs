@@ -1,11 +1,15 @@
 use std::collections::HashSet;
 
+use parser::{Lr1Automaton, MetaSymbol, Rule, Symbol};
 use proc_macro::TokenStream;
 use quote::quote;
 use regex_automata::dfa::dense;
 use syn::{
-    parse::Parse, spanned::Spanned, token::Comma, Data, DeriveInput, Expr, ExprClosure, Fields, Ident, LitStr
+    parse::Parse, spanned::Spanned, token::Comma, Data, DeriveInput, Expr, ExprClosure, Fields,
+    Ident, LitStr,
 };
+
+mod parser;
 
 #[proc_macro_derive(Tokens, attributes(ignored, token))]
 pub fn tokens_derive(input: TokenStream) -> TokenStream {
@@ -172,8 +176,9 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
     if let Data::Enum(data) = input.data {
         let name = input.ident;
 
-        let rules = vec![];
-        let non_terminals = vec![];
+        let mut rules = vec![];
+        let mut non_terminals = vec![];
+        let mut terminals = vec![];
 
         for variant in data.variants {
             let mut has_rule = false;
@@ -191,22 +196,55 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
                     None
                 }
             }) {
-
+                rules.push((variant.ident.clone(), input.parts, input.fun));
             }
 
             if !has_rule {
-                non_terminals.push((variant.ident.clone(), matches!(variant.fields, Fields::Unnamed(_))));
+                terminals.push((
+                    variant.ident.clone(),
+                    matches!(variant.fields, Fields::Unnamed(_)),
+                ));
+            } else {
+                non_terminals.push(variant.ident);
             }
         }
-                
+
+        let parser_rules = rules
+            .iter()
+            .map(|rule| Rule {
+                parts: rule
+                    .1
+                    .iter()
+                    .map(|ident| {
+                        if let Some(i) = non_terminals.iter().position(|e| e == ident) {
+                            Symbol::NonTerminal(MetaSymbol::Normal(i))
+                        } else if let Some(i) = terminals.iter().position(|(e, _)| e == ident) {
+                            Symbol::Terminal(i)
+                        } else {
+                            panic!("Symbol \"{ident}\" unknown (in rule for \"{}\")", rule.0);
+                        }
+                    })
+                    .collect(),
+                result: MetaSymbol::Normal(
+                    non_terminals
+                        .iter()
+                        .position(|e| *e == rule.0)
+                        .expect("This comes from the variants, so should always exist"),
+                ),
+            })
+            .collect();
+
+        let mut automaton = Lr1Automaton::create(parser_rules);
+        automaton.build_automaton();
+
+        panic!("{:#?}", automaton);
 
         quote! {
-            impl langen::Tokens for #name {
-                fn scan(input: &str) -> Result<Vec<(Self, langen::Span)>, langen::LexerError> {
-                    
-                }
+            impl langen::Grammar for #name {
+
             }
-        }.into()
+        }
+        .into()
     } else {
         panic!("Langen can only be used on enum");
     }

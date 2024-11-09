@@ -1,6 +1,6 @@
 use std::{error::Error, fmt::Display};
 
-pub use langen_macro::{Tokens, Grammar};
+pub use langen_macro::{Grammar, Tokens};
 pub use regex_automata;
 
 #[derive(Debug)]
@@ -26,6 +26,12 @@ where
     Self: Sized,
 {
     fn scan(input: &str) -> Result<Vec<(Self, Span)>, LexerError>;
+}
+
+pub trait Grammar
+where
+    Self: Sized,
+{
 }
 
 #[derive(thiserror::Error, Debug)]
