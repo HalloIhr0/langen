@@ -1,6 +1,6 @@
-use std::collections::HashSet;
+use std::rc::Rc;
 
-use parser::{Lr1Automaton, MetaSymbol, Rule, Symbol};
+use parser::{Lr1Automaton, MetaSymbol, Rule, Symbol, Terminal};
 use proc_macro::TokenStream;
 use quote::quote;
 use regex_automata::dfa::dense;
@@ -211,33 +211,36 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
 
         let parser_rules = rules
             .iter()
-            .map(|rule| Rule {
-                parts: rule
-                    .1
-                    .iter()
-                    .map(|ident| {
-                        if let Some(i) = non_terminals.iter().position(|e| e == ident) {
-                            Symbol::NonTerminal(MetaSymbol::Normal(i))
-                        } else if let Some(i) = terminals.iter().position(|(e, _)| e == ident) {
-                            Symbol::Terminal(i)
-                        } else {
-                            panic!("Symbol \"{ident}\" unknown (in rule for \"{}\")", rule.0);
-                        }
-                    })
-                    .collect(),
-                result: MetaSymbol::Normal(
-                    non_terminals
+            .map(|rule| {
+                Rc::new(Rule {
+                    parts: rule
+                        .1
                         .iter()
-                        .position(|e| *e == rule.0)
-                        .expect("This comes from the variants, so should always exist"),
-                ),
+                        .map(|ident| {
+                            if let Some(i) = non_terminals.iter().position(|e| e == ident) {
+                                Symbol::NonTerminal(MetaSymbol::Normal(i))
+                            } else if let Some(i) = terminals.iter().position(|(e, _)| e == ident) {
+                                Symbol::Terminal(Terminal::Normal(i))
+                            } else {
+                                panic!("Symbol \"{ident}\" unknown (in rule for \"{}\")", rule.0);
+                            }
+                        })
+                        .collect(),
+                    result: MetaSymbol::Normal(
+                        non_terminals
+                            .iter()
+                            .position(|e| *e == rule.0)
+                            .expect("This comes from the variants, so should always exist"),
+                    ),
+                })
             })
             .collect();
 
-        let mut automaton = Lr1Automaton::create(parser_rules);
+        let mut automaton =
+            Lr1Automaton::create(parser_rules, terminals.len(), non_terminals.len());
         automaton.build_automaton();
 
-        panic!("{:#?}", automaton);
+        panic!("{}", automaton);
 
         quote! {
             impl langen::Grammar for #name {

@@ -1,14 +1,26 @@
-use std::{collections::HashSet, hash::Hash, ptr, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    hash::Hash,
+    ptr,
+    rc::Rc,
+};
 
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub enum Terminal {
+    Normal(usize),
+    Eof,
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum MetaSymbol {
     Normal(usize),
     Start,
 }
 
-#[derive(PartialEq, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
 pub enum Symbol {
-    Terminal(usize),
+    Terminal(Terminal),
     NonTerminal(MetaSymbol),
 }
 
@@ -22,6 +34,7 @@ pub struct Rule {
 struct Element {
     rule: Rc<Rule>,
     pos: usize,
+    lookahead: HashSet<Terminal>,
 }
 
 impl Element {
@@ -33,13 +46,16 @@ impl Element {
         Self {
             rule: self.rule.clone(),
             pos: self.pos + 1,
+            lookahead: self.lookahead.clone(),
         }
     }
 }
 
 impl PartialEq for Element {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.rule, &other.rule) && self.pos == other.pos
+        Rc::ptr_eq(&self.rule, &other.rule)
+            && self.pos == other.pos
+            && self.lookahead == other.lookahead
     }
 }
 
@@ -50,6 +66,9 @@ impl Hash for Element {
         // https://users.rust-lang.org/t/hash-based-on-address-not-value-of-rc/28824
         ptr::hash(&*self.rule, state);
         self.pos.hash(state);
+        // We don't hash lookahead
+        // But since the condition is just "k1 == k2 -> hash(k1) == hash(k2)", this should still be fine
+        // We might just have a few hash collisions, but compile time performance doesn't matter anyways
     }
 }
 
@@ -60,21 +79,32 @@ struct Transition {
     symbol: Symbol,
 }
 
+#[derive(Clone, Debug)]
+struct FirstSet {
+    set: HashSet<Terminal>,
+    contains_epsilon: bool,
+}
+
 // Algorithms from https://amor.cms.hu-berlin.de/~kunert/papers/lr-analyse/lr.pdf
-// For now this is LR(0)
 #[derive(Debug)]
 pub struct Lr1Automaton {
     rules: Vec<Rc<Rule>>,
     states: Vec<HashSet<Element>>,
     transitions: Vec<Transition>,
+    first_sets: HashMap<Symbol, FirstSet>,
+    num_terminal: usize,
+    num_nonterminal: usize,
 }
 
 impl Lr1Automaton {
-    pub fn create(rules: Vec<Rule>) -> Self {
+    pub fn create(rules: Vec<Rc<Rule>>, num_terminal: usize, num_nonterminal: usize) -> Self {
         Self {
-            rules: rules.into_iter().map(|rule| Rc::new(rule)).collect(),
+            rules,
             states: vec![],
             transitions: vec![],
+            first_sets: HashMap::new(),
+            num_terminal,
+            num_nonterminal,
         }
     }
 
@@ -85,6 +115,8 @@ impl Lr1Automaton {
             result: MetaSymbol::Start,
         }));
 
+        self.build_first_sets();
+
         let start = self.closure(&HashSet::from([Element {
             rule: self
                 .rules
@@ -92,6 +124,7 @@ impl Lr1Automaton {
                 .expect("Has been inserted two lines above")
                 .clone(),
             pos: 0,
+            lookahead: HashSet::from([Terminal::Eof]),
         }]));
         self.states.push(start);
 
@@ -126,6 +159,78 @@ impl Lr1Automaton {
         }
     }
 
+    fn build_first_sets(&mut self) {
+        self.first_sets.insert(
+            Symbol::Terminal(Terminal::Eof),
+            FirstSet {
+                set: HashSet::from([Terminal::Eof]),
+                contains_epsilon: false,
+            },
+        );
+        for i in 0..self.num_terminal {
+            self.first_sets.insert(
+                Symbol::Terminal(Terminal::Normal(i)),
+                FirstSet {
+                    set: HashSet::from([Terminal::Normal(i)]),
+                    contains_epsilon: false,
+                },
+            );
+        }
+        self.first_sets.insert(
+            Symbol::NonTerminal(MetaSymbol::Start),
+            FirstSet {
+                set: HashSet::new(),
+                contains_epsilon: false,
+            },
+        );
+        for i in 0..self.num_nonterminal {
+            self.first_sets.insert(
+                Symbol::NonTerminal(MetaSymbol::Normal(i)),
+                FirstSet {
+                    set: HashSet::new(),
+                    contains_epsilon: false,
+                },
+            );
+        }
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+            'outer: for rule in &self.rules {
+                for part in &rule.parts {
+                    let part_first_set = self
+                        .first_sets
+                        .get(part)
+                        .expect("Has been inserted above")
+                        .clone();
+                    for symbol in part_first_set.set {
+                        changed |= self
+                            .first_sets
+                            .get_mut(&Symbol::NonTerminal(rule.result.clone()))
+                            .expect("Has been inserted above")
+                            .set
+                            .insert(symbol);
+                    }
+                    if !part_first_set.contains_epsilon {
+                        continue 'outer;
+                    }
+                }
+                if !self
+                    .first_sets
+                    .get(&Symbol::NonTerminal(rule.result.clone()))
+                    .expect("Has been inserted above")
+                    .contains_epsilon
+                {
+                    self.first_sets
+                        .get_mut(&Symbol::NonTerminal(rule.result.clone()))
+                        .expect("Has been inserted above")
+                        .contains_epsilon = true;
+                    changed = true;
+                }
+            }
+        }
+    }
+
     fn closure(&self, elems: &HashSet<Element>) -> HashSet<Element> {
         let mut result = HashSet::new();
         let mut queue = elems.iter().cloned().collect::<Vec<_>>();
@@ -137,6 +242,8 @@ impl Lr1Automaton {
                         let new_elem = Element {
                             rule: rule.clone(),
                             pos: 0,
+                            lookahead: self
+                                .first(&elem.rule.parts[(elem.pos + 1)..], &elem.lookahead),
                         };
                         if !result.contains(&new_elem) {
                             queue.push(new_elem);
@@ -147,7 +254,29 @@ impl Lr1Automaton {
 
             result.insert(elem);
         }
-        result
+
+        // combine elements that only differ in lookahead
+        let mut combined_result: HashSet<Element> = HashSet::new();
+        for elem in result {
+            if let Some(mut existing_elem) = combined_result
+                .iter()
+                .find(|existing_elem| {
+                    Rc::ptr_eq(&existing_elem.rule, &elem.rule) && existing_elem.pos == elem.pos
+                })
+                .cloned()
+            {
+                combined_result.remove(&existing_elem);
+                existing_elem.lookahead = existing_elem
+                    .lookahead
+                    .union(&elem.lookahead)
+                    .cloned()
+                    .collect();
+                combined_result.insert(existing_elem);
+            } else {
+                combined_result.insert(elem);
+            }
+        }
+        combined_result
     }
 
     fn goto(&self, elems: &HashSet<Element>, symbol: &Symbol) -> HashSet<Element> {
@@ -158,5 +287,47 @@ impl Lr1Automaton {
             }
         }
         self.closure(&result)
+    }
+
+    // This result can never contain epsilon (because set is just terminals), so just returning a HashSet<Terminal> is enough
+    fn first(&self, prefix: &[Symbol], set: &HashSet<Terminal>) -> HashSet<Terminal> {
+        let mut result = HashSet::new();
+
+        for symbol in prefix {
+            let first_set = self.first_sets.get(symbol).expect("Should always exist");
+            result = result.union(&first_set.set).cloned().collect();
+            if !first_set.contains_epsilon {
+                // Since we always end in prefix, there is no need to check the set symbols
+                return result;
+            }
+        }
+
+        // since set is just terminals and first(terminal)={terminal}, this is valid
+        result.union(set).cloned().collect()
+    }
+}
+
+impl Display for Lr1Automaton {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, state) in self.states.iter().enumerate() {
+            writeln!(f, "{i}:")?;
+            for element in state {
+                writeln!(
+                    f,
+                    "    {:?} @ {} ({:?})",
+                    element.rule, element.pos, element.lookahead
+                )?;
+            }
+        }
+
+        for transition in &self.transitions {
+            writeln!(
+                f,
+                "{} -> {} ({:?})",
+                transition.from, transition.to, transition.symbol
+            )?;
+        }
+
+        Ok(())
     }
 }
