@@ -96,6 +96,13 @@ pub struct Lr1Automaton {
     num_nonterminal: usize,
 }
 
+#[derive(Debug)]
+pub enum Action {
+    Shift(usize),
+    Reduce(usize),
+    Accept
+}
+
 impl Lr1Automaton {
     pub fn create(rules: Vec<Rc<Rule>>, num_terminal: usize, num_nonterminal: usize) -> Self {
         Self {
@@ -157,6 +164,57 @@ impl Lr1Automaton {
             }
             i += 1;
         }
+    }
+
+    /// Returns (action, jump)
+    /// 
+    /// action is state num primary, symbol secondary
+    /// 
+    /// jump is metasymbol num primary, state secondary
+    pub fn generate_tables(&self) -> (Vec<HashMap<Terminal, Action>>, Vec<HashMap<usize, usize>>) {
+        let mut action = vec![];
+        let mut jump = vec![HashMap::new(); self.num_nonterminal];
+        for (i, state) in self.states.iter().enumerate() {
+            let mut action_row = HashMap::new();
+
+            for transition in &self.transitions {
+                if transition.from == i {
+                    match &transition.symbol {
+                        Symbol::Terminal(symbol) => {
+                            if action_row.insert(symbol.clone(), Action::Shift(transition.to)).is_some() {
+                                eprintln!("######## Conflict ########");
+                            }
+                        }
+                        Symbol::NonTerminal(MetaSymbol::Normal(symbol)) => {
+                            if jump[*symbol].insert(i, transition.to).is_some() {
+                                eprintln!("######## Conflict ########");
+                            }
+                        }
+                        _ => {unreachable!("The automaton shouldn't be able to contain these as transitions")}
+                    }
+                }
+            }
+
+            for element in state {
+                if element.pos == element.rule.parts.len() {
+                    for symbol in &element.lookahead {
+                        if element.rule.result == MetaSymbol::Start && *symbol == Terminal::Eof {
+                            if action_row.insert(Terminal::Eof, Action::Accept).is_some() {
+                                eprintln!("######## Conflict ########");
+                            }
+                        } else {
+                            let rule_i = self.rules.iter().position(|rule| Rc::ptr_eq(rule, &element.rule)).expect("Must contain rule");
+                            if action_row.insert(symbol.clone(), Action::Reduce(rule_i)).is_some() {
+                                eprintln!("######## Conflict ########");
+                            }
+                        }
+                    }
+                }
+            }
+
+            action.push(action_row);
+        }
+        (action, jump)
     }
 
     fn build_first_sets(&mut self) {

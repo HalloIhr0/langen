@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use parser::{Lr1Automaton, MetaSymbol, Rule, Symbol, Terminal};
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use regex_automata::dfa::dense;
 use syn::{
     parse::Parse, spanned::Spanned, token::Comma, Data, DeriveInput, Expr, ExprClosure, Fields,
@@ -179,6 +179,8 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
         let mut rules = vec![];
         let mut non_terminals = vec![];
         let mut terminals = vec![];
+        let mut out_variant = None;
+        let mut out_type = None;
 
         for variant in data.variants {
             let mut has_rule = false;
@@ -205,7 +207,14 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
                     matches!(variant.fields, Fields::Unnamed(_)),
                 ));
             } else {
-                non_terminals.push(variant.ident);
+                let Fields::Unnamed(fields) = variant.fields else {
+                    panic!("Every variant of grammar must have one unnamed field");
+                };
+                non_terminals.push(variant.ident.clone());
+                if out_type.is_none() {
+                    out_variant = Some(variant.ident.clone());
+                    out_type = Some(fields.unnamed[0].ty.clone());
+                }
             }
         }
 
@@ -239,12 +248,180 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
         let mut automaton =
             Lr1Automaton::create(parser_rules, terminals.len(), non_terminals.len());
         automaton.build_automaton();
+        let (action, jump) = automaton.generate_tables();
 
-        panic!("{}", automaton);
+        let mut action_code = vec![];
+
+        for (i, action_row) in action.iter().enumerate() {
+            for (symbol, action) in action_row {
+                let code_symbol = match symbol {
+                    Terminal::Normal(symbol_i) => {
+                        let (ident, has_value) = &terminals[*symbol_i];
+                        if *has_value {
+                            quote! {Some((Self::#ident(v), span))}
+                        } else {
+                            quote! {Some((Self::#ident, span))}
+                        }
+                    }
+                    Terminal::Eof => quote! {None},
+                };
+                let action = match action {
+                    parser::Action::Shift(n) => match symbol {
+                        Terminal::Normal(symbol_i) => {
+                            let (ident, has_value) = &terminals[*symbol_i];
+                            if *has_value {
+                                quote! {
+                                    stack.push(#n);
+                                    symbol_stack.push((Self::#ident(v), span));
+                                }
+                            } else {
+                                quote! {
+                                    stack.push(#n);
+                                    symbol_stack.push((Self::#ident, span));
+                                }
+                            }
+                        }
+                        Terminal::Eof => {
+                            panic!("Can't shift in EOF");
+                        }
+                    },
+                    parser::Action::Reduce(m) => {
+                        let put_back = match symbol {
+                            Terminal::Normal(symbol_i) => {
+                                let (ident, has_value) = &terminals[*symbol_i];
+                                if *has_value {
+                                    quote! {input.push((Self::#ident(v), span));}
+                                } else {
+                                    quote! {input.push((Self::#ident, span));}
+                                }
+                            }
+                            Terminal::Eof => quote! {},
+                        };
+
+                        let mut pop_code = vec![];
+                        let mut fields = vec![];
+                        let mut spans = vec![];
+                        for (i, ident) in rules[*m].1.iter().enumerate() {
+                            let var_ident = format_ident!("v{i}");
+                            let span_ident = format_ident!("s{i}");
+
+                            if non_terminals.contains(ident) {
+                                pop_code.push(quote! {
+                                            stack.pop();
+                                            let Some((Self::#ident(#var_ident), #span_ident)) = symbol_stack.pop() else {unreachable!("Stack corrupted! (1)")};
+                                        });
+                                fields.push(var_ident);
+                            } else {
+                                if terminals
+                                    .iter()
+                                    .find_map(|(var_ident, has_value)| {
+                                        if var_ident == ident {
+                                            Some(*has_value)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .expect("Has to be in terminals")
+                                {
+                                    pop_code.push(quote! {
+                                                stack.pop();
+                                                let Some((Self::#ident(#var_ident), #span_ident)) = symbol_stack.pop() else {unreachable!("Stack corrupted! (2)")};
+                                            });
+                                    fields.push(var_ident);
+                                } else {
+                                    pop_code.push(quote! {
+                                                stack.pop();
+                                                let Some((Self::#ident, #span_ident)) = symbol_stack.pop() else {unreachable!("Stack corrupted! (3)")};
+                                            });
+                                }
+                            }
+                            spans.push(span_ident);
+                        }
+                        pop_code = pop_code.into_iter().rev().collect();
+
+                        let closure = &rules[*m].2;
+
+                        let func_code = if spans.is_empty() {
+                            quote! {
+                                // TODO: maybe try to find actual values for this
+                                let span = langen::Span { start: 0, end: 0 };
+                                let r = (#closure)(span.clone());
+                                let value = match r {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        return Err(langen::ParserError::ProcessError(num_tokens-input.len(), Box::new(e), span));
+                                    }
+                                };
+                            }
+                        } else {
+                            let first = spans.first().expect("Can't be empty");
+                            let last = spans.last().expect("Can't be empty");
+                            quote! {
+                                let span = langen::Span { start: #first.start, end: #last.end };
+                                let r = (#closure)(span.clone(), #( #fields ),*);
+                                let value = match r {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        return Err(langen::ParserError::ProcessError(num_tokens-input.len(), Box::new(e), span));
+                                    }
+                                };
+                            }
+                        };
+
+                        let result = &rules[*m].0;
+                        let mut jump_code = vec![];
+                        let meta_i = non_terminals.iter().position(|elem| elem == result).expect("Must contain ident");
+
+                        for (state, new_state) in &jump[meta_i] {
+                            jump_code.push(quote!{
+                                Some(#state) => {stack.push(#new_state)}
+                            });
+                        }
+
+                        quote! {
+                            #put_back
+                            #( # pop_code )*
+                            #func_code
+                            symbol_stack.push((Self::#result(value), span));
+                            match stack.last() {
+                                #( #jump_code )*
+                                _ => unreachable!("Stack corrupted! (4)"),
+                            }
+                        }
+                    }
+                    parser::Action::Accept => {
+                        quote! {
+                            let (Self::#out_variant(v), _) = symbol_stack.pop().expect("Stack corrupted! (5)") else {
+                                unreachable!("Stack corrupted! (6)")
+                            };
+                            return Ok(v);
+                        }
+                    }
+                };
+                action_code.push(quote! {(Some(#i), #code_symbol) => {#action}});
+            }
+        }
 
         quote! {
             impl langen::Grammar for #name {
+                type OUT = #out_type;
 
+                fn parse(tokens: Vec<(Self, langen::Span)>) -> Result<Self::OUT, langen::ParserError<Self>> {
+                    let num_tokens = tokens.len();
+                    let mut input = tokens.into_iter().rev().collect::<Vec<_>>();
+                    let mut symbol_stack: Vec<(Self, langen::Span)> = vec![];
+                    let mut stack: Vec<usize> = vec![0];
+
+                    loop {
+                        // println!("{:?}\n\n{:?}\n\n{:?}\n\n\n", input, symbol_stack, stack);
+                        match (stack.last(), input.pop()) {
+                            #( #action_code )*
+                            (None, _) => {return Err(langen::ParserError::UnexpectedEnd)} // This is something else, might even be unreachable, but i don't care
+                            (_, None) => {return Err(langen::ParserError::UnexpectedEnd)}
+                            (_, Some((token, span))) => {return Err(langen::ParserError::InvalidToken(num_tokens-input.len(), token, span))}
+                        }
+                    }
+                }
             }
         }
         .into()

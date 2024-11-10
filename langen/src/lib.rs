@@ -1,12 +1,12 @@
-use std::{error::Error, fmt::Display};
+use std::{error::Error, fmt::{Debug, Display}};
 
 pub use langen_macro::{Grammar, Tokens};
 pub use regex_automata;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Span {
-    start: usize,
-    end: usize,
+    pub start: usize,
+    pub end: usize,
 }
 
 impl Span {
@@ -30,8 +30,10 @@ where
 
 pub trait Grammar
 where
-    Self: Sized,
+    Self: Sized + Debug,
 {
+    type OUT;
+    fn parse(tokens: Vec<(Self, Span)>) -> Result<Self::OUT, ParserError<Self>>;
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -40,6 +42,16 @@ pub enum LexerError {
     NoToken(usize),
     #[error("Something went wrong during processing {1}: {0}")]
     ProcessError(Box<dyn Error>, Span),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ParserError<T: Debug> {
+    #[error("Unexpected ending")]
+    UnexpectedEnd,
+    #[error("Invalid Token {0} ({2}): {1:?}")]
+    InvalidToken(usize, T, Span),
+    #[error("Something went wrong during processing {0} ({2}): {1}")]
+    ProcessError(usize, Box<dyn Error>, Span),
 }
 
 #[derive(Debug)]
