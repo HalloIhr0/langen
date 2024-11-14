@@ -248,6 +248,7 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
         let mut automaton =
             Lr1Automaton::create(parser_rules, terminals.len(), non_terminals.len());
         automaton.build_automaton();
+        automaton = automaton.to_lalr1();
         let (action, jump) = automaton.generate_tables();
 
         let mut action_code = vec![];

@@ -31,13 +31,19 @@ pub struct Rule {
 }
 
 #[derive(Clone, Debug)]
-struct Element {
+struct Lr0Element {
+    rule: Rc<Rule>,
+    pos: usize,
+}
+
+#[derive(Clone, Debug)]
+struct Lr1Element {
     rule: Rc<Rule>,
     pos: usize,
     lookahead: HashSet<Terminal>,
 }
 
-impl Element {
+impl Lr1Element {
     fn next_symbol(&self) -> Option<&Symbol> {
         self.rule.parts.get(self.pos)
     }
@@ -49,9 +55,30 @@ impl Element {
             lookahead: self.lookahead.clone(),
         }
     }
+
+    fn to_lr0(&self) -> Lr0Element {
+        Lr0Element { rule: self.rule.clone(), pos: self.pos }
+    }
 }
 
-impl PartialEq for Element {
+impl PartialEq for Lr0Element {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.rule, &other.rule)
+            && self.pos == other.pos
+    }
+}
+
+impl Eq for Lr0Element {}
+
+impl Hash for Lr0Element {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // https://users.rust-lang.org/t/hash-based-on-address-not-value-of-rc/28824
+        ptr::hash(&*self.rule, state);
+        self.pos.hash(state);
+    }
+}
+
+impl PartialEq for Lr1Element {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.rule, &other.rule)
             && self.pos == other.pos
@@ -59,9 +86,9 @@ impl PartialEq for Element {
     }
 }
 
-impl Eq for Element {}
+impl Eq for Lr1Element {}
 
-impl Hash for Element {
+impl Hash for Lr1Element {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         // https://users.rust-lang.org/t/hash-based-on-address-not-value-of-rc/28824
         ptr::hash(&*self.rule, state);
@@ -72,7 +99,7 @@ impl Hash for Element {
     }
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 struct Transition {
     from: usize,
     to: usize,
@@ -89,7 +116,7 @@ struct FirstSet {
 #[derive(Debug)]
 pub struct Lr1Automaton {
     rules: Vec<Rc<Rule>>,
-    states: Vec<HashSet<Element>>,
+    states: Vec<HashSet<Lr1Element>>,
     transitions: Vec<Transition>,
     first_sets: HashMap<Symbol, FirstSet>,
     num_terminal: usize,
@@ -124,7 +151,7 @@ impl Lr1Automaton {
 
         self.build_first_sets();
 
-        let start = self.closure(&HashSet::from([Element {
+        let start = self.closure(&HashSet::from([Lr1Element {
             rule: self
                 .rules
                 .last()
@@ -164,6 +191,41 @@ impl Lr1Automaton {
             }
             i += 1;
         }
+    }
+
+    pub fn to_lalr1(self) -> Self {
+        let mut new_states: Vec<HashSet<Lr1Element>> = vec![];
+        let mut state_mapping = vec![];
+        'outer: for state in self.states {
+            let lr0 = state.iter().map(Lr1Element::to_lr0).collect::<HashSet<_>>();
+            for (new_i, new_state) in new_states.iter_mut().enumerate() {
+                let new_lr0 = new_state.iter().map(Lr1Element::to_lr0).collect::<HashSet<_>>();
+                if lr0 == new_lr0 {
+                    let mut new_elements = HashSet::new();
+                    for mut element in state {
+                        let new_elem = new_state.iter().find(|new_elem| element.to_lr0() == new_elem.to_lr0()).expect("Has to be in there");
+                        element.lookahead = element.lookahead.union(&new_elem.lookahead).cloned().collect();
+                        new_elements.insert(element);
+                    }
+                    *new_state = new_elements;
+                    state_mapping.push(new_i);
+                    continue 'outer;
+                }
+            }
+            new_states.push(state);
+            state_mapping.push(new_states.len()-1);
+        }
+
+        let mut new_transitions = vec![];
+        for mut transition in self.transitions {
+            transition.from = state_mapping[transition.from];
+            transition.to = state_mapping[transition.to];
+            if !new_transitions.contains(&transition) {
+                new_transitions.push(transition);
+            }
+        }
+
+        Self { rules: self.rules, states: new_states, transitions: new_transitions, first_sets: HashMap::new(), num_terminal: self.num_terminal, num_nonterminal: self.num_nonterminal }
     }
 
     /// Returns (action, jump)
@@ -289,7 +351,7 @@ impl Lr1Automaton {
         }
     }
 
-    fn closure(&self, elems: &HashSet<Element>) -> HashSet<Element> {
+    fn closure(&self, elems: &HashSet<Lr1Element>) -> HashSet<Lr1Element> {
         let mut result = HashSet::new();
         let mut queue = elems.iter().cloned().collect::<Vec<_>>();
 
@@ -297,7 +359,7 @@ impl Lr1Automaton {
             if let Some(Symbol::NonTerminal(symbol)) = elem.next_symbol() {
                 for rule in &self.rules {
                     if rule.result == *symbol {
-                        let new_elem = Element {
+                        let new_elem = Lr1Element {
                             rule: rule.clone(),
                             pos: 0,
                             lookahead: self
@@ -314,7 +376,7 @@ impl Lr1Automaton {
         }
 
         // combine elements that only differ in lookahead
-        let mut combined_result: HashSet<Element> = HashSet::new();
+        let mut combined_result: HashSet<Lr1Element> = HashSet::new();
         for elem in result {
             if let Some(mut existing_elem) = combined_result
                 .iter()
@@ -337,7 +399,7 @@ impl Lr1Automaton {
         combined_result
     }
 
-    fn goto(&self, elems: &HashSet<Element>, symbol: &Symbol) -> HashSet<Element> {
+    fn goto(&self, elems: &HashSet<Lr1Element>, symbol: &Symbol) -> HashSet<Lr1Element> {
         let mut result = HashSet::new();
         for elem in elems {
             if elem.next_symbol().is_some_and(|s| s == symbol) {
