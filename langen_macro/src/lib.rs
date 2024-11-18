@@ -11,9 +11,21 @@ use syn::{
 
 mod parser;
 
+/// Derive macro for Tokens
+///
+/// Every token must have a `#[token(regex [, process_func])]` attribute.
+/// `process_func` is an optional closure that specifies how data should be extracted from the token characters.
+/// `regex` indicates how the token should be matches.
+/// The tokens defined first will have higher priority than the later ones.
+///
+/// You can also use any number of `#[ignore(regex)]` attributes to indicate that some character sequences should be ignored
+///
+/// # Panics
+/// Panics if any attributes are invalid
+#[allow(clippy::too_many_lines)]
 #[proc_macro_derive(Tokens, attributes(ignored, token))]
 pub fn tokens_derive(input: TokenStream) -> TokenStream {
-    let input: DeriveInput = syn::parse(input).unwrap();
+    let input: DeriveInput = syn::parse(input).expect("Input has to be from derive");
     if let Data::Enum(data) = input.data {
         let name = input.ident;
 
@@ -24,7 +36,7 @@ pub fn tokens_derive(input: TokenStream) -> TokenStream {
         for re in input.attrs.iter().filter_map(|attr| {
             if attr.path().is_ident("ignored") {
                 let t: LitStr = attr.parse_args().unwrap_or_else(|_| {
-                    panic!("ignored argument for \"{}\" must be string literal", name)
+                    panic!("ignored argument for \"{name}\" must be string literal")
                 });
                 Some(t)
             } else {
@@ -170,9 +182,19 @@ impl Parse for TokenInput {
     }
 }
 
+/// Derive macro for Grammar
+///
+/// Every Symbol must have a `#[rule(process_func, symbol *)]` attribute.
+/// `process_func` is a closure that specifies how data should be extracted from the symbols consumed in this rule.
+/// `symbol`s are any amount of variants of this enum making up this rule. See <https://en.wikipedia.org/wiki/Formal_grammar> for more info.
+/// The first variant with a `#[rule]` attribute always is the starting symbol of the grammar
+///
+/// # Panics
+/// Panics if any attributes are invalid
+#[allow(clippy::too_many_lines)]
 #[proc_macro_derive(Grammar, attributes(rule))]
 pub fn grammar_derive(input: TokenStream) -> TokenStream {
-    let input: DeriveInput = syn::parse(input).unwrap();
+    let input: DeriveInput = syn::parse(input).expect("Input has to be from derive");
     if let Data::Enum(data) = input.data {
         let name = input.ident;
 
@@ -201,12 +223,7 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
                 rules.push((variant.ident.clone(), input.parts, input.fun));
             }
 
-            if !has_rule {
-                terminals.push((
-                    variant.ident.clone(),
-                    matches!(variant.fields, Fields::Unnamed(_)),
-                ));
-            } else {
+            if has_rule {
                 let Fields::Unnamed(fields) = variant.fields else {
                     panic!("Every variant of grammar must have one unnamed field");
                 };
@@ -215,6 +232,11 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
                     out_variant = Some(variant.ident.clone());
                     out_type = Some(fields.unnamed[0].ty.clone());
                 }
+            } else {
+                terminals.push((
+                    variant.ident.clone(),
+                    matches!(variant.fields, Fields::Unnamed(_)),
+                ));
             }
         }
 
@@ -248,7 +270,7 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
         let mut automaton =
             Lr1Automaton::create(parser_rules, terminals.len(), non_terminals.len());
         automaton.build_automaton();
-        automaton = automaton.to_lalr1();
+        automaton = automaton.make_lalr1();
         let (action, jump) = automaton.generate_tables();
 
         let mut action_code = vec![];
@@ -312,30 +334,29 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
                                             let Some((Self::#ident(#var_ident), #span_ident)) = symbol_stack.pop() else {unreachable!("Stack corrupted! (1)")};
                                         });
                                 fields.push(var_ident);
-                            } else {
-                                if terminals
-                                    .iter()
-                                    .find_map(|(var_ident, has_value)| {
-                                        if var_ident == ident {
-                                            Some(*has_value)
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .expect("Has to be in terminals")
-                                {
-                                    pop_code.push(quote! {
+                            } else if terminals
+                                .iter()
+                                .find_map(|(var_ident, has_value)| {
+                                    if var_ident == ident {
+                                        Some(*has_value)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .expect("Has to be in terminals")
+                            {
+                                pop_code.push(quote! {
                                                 stack.pop();
                                                 let Some((Self::#ident(#var_ident), #span_ident)) = symbol_stack.pop() else {unreachable!("Stack corrupted! (2)")};
                                             });
-                                    fields.push(var_ident);
-                                } else {
-                                    pop_code.push(quote! {
+                                fields.push(var_ident);
+                            } else {
+                                pop_code.push(quote! {
                                                 stack.pop();
                                                 let Some((Self::#ident, #span_ident)) = symbol_stack.pop() else {unreachable!("Stack corrupted! (3)")};
                                             });
-                                }
                             }
+
                             spans.push(span_ident);
                         }
                         pop_code = pop_code.into_iter().rev().collect();
@@ -371,10 +392,13 @@ pub fn grammar_derive(input: TokenStream) -> TokenStream {
 
                         let result = &rules[*m].0;
                         let mut jump_code = vec![];
-                        let meta_i = non_terminals.iter().position(|elem| elem == result).expect("Must contain ident");
+                        let meta_i = non_terminals
+                            .iter()
+                            .position(|elem| elem == result)
+                            .expect("Must contain ident");
 
                         for (state, new_state) in &jump[meta_i] {
-                            jump_code.push(quote!{
+                            jump_code.push(quote! {
                                 Some(#state) => {stack.push(#new_state)}
                             });
                         }
@@ -439,9 +463,7 @@ struct RuleInput {
 impl Parse for RuleInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let expr: Expr = input.parse()?;
-        let fun = if let Expr::Closure(closure) = expr {
-            closure
-        } else {
+        let Expr::Closure(fun) = expr else {
             return Err(syn::Error::new(
                 expr.span(),
                 "First argument to rule must be closure",

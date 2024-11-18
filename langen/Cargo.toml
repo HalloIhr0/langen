@@ -14,3 +14,14 @@ readme = "../README.md"
 langen_macro = { path = "../langen_macro", version="2.0.0" }
 thiserror = "2.0"
 regex-automata = { version = "0.4", featrues = [] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+enum_glob_use = "deny"
+pedantic = "warn"
+# nursery = "warn"
+unwrap_used = "warn"
+missing_const_for_fn = "warn"

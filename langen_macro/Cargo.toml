@@ -18,3 +18,14 @@ syn = { version = "2.0", features = ["full", "parsing", "derive", "extra-traits"
 quote = "1.0"
 proc-macro2 = "1.0"
 regex-automata = { version = "0.4", featrues = ["dfa-build", "syntax"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "forbid"
+# missing_docs = "warn"
+
+[lints.clippy]
+enum_glob_use = "deny"
+pedantic = "warn"
+# nursery = "warn"
+unwrap_used = "warn"
+missing_const_for_fn = "warn"

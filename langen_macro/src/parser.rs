@@ -57,14 +57,16 @@ impl Lr1Element {
     }
 
     fn to_lr0(&self) -> Lr0Element {
-        Lr0Element { rule: self.rule.clone(), pos: self.pos }
+        Lr0Element {
+            rule: self.rule.clone(),
+            pos: self.pos,
+        }
     }
 }
 
 impl PartialEq for Lr0Element {
     fn eq(&self, other: &Self) -> bool {
-        Rc::ptr_eq(&self.rule, &other.rule)
-            && self.pos == other.pos
+        Rc::ptr_eq(&self.rule, &other.rule) && self.pos == other.pos
     }
 }
 
@@ -127,7 +129,7 @@ pub struct Lr1Automaton {
 pub enum Action {
     Shift(usize),
     Reduce(usize),
-    Accept
+    Accept,
 }
 
 impl Lr1Automaton {
@@ -193,18 +195,28 @@ impl Lr1Automaton {
         }
     }
 
-    pub fn to_lalr1(self) -> Self {
+    pub fn make_lalr1(self) -> Self {
         let mut new_states: Vec<HashSet<Lr1Element>> = vec![];
         let mut state_mapping = vec![];
         'outer: for state in self.states {
             let lr0 = state.iter().map(Lr1Element::to_lr0).collect::<HashSet<_>>();
             for (new_i, new_state) in new_states.iter_mut().enumerate() {
-                let new_lr0 = new_state.iter().map(Lr1Element::to_lr0).collect::<HashSet<_>>();
+                let new_lr0 = new_state
+                    .iter()
+                    .map(Lr1Element::to_lr0)
+                    .collect::<HashSet<_>>();
                 if lr0 == new_lr0 {
                     let mut new_elements = HashSet::new();
                     for mut element in state {
-                        let new_elem = new_state.iter().find(|new_elem| element.to_lr0() == new_elem.to_lr0()).expect("Has to be in there");
-                        element.lookahead = element.lookahead.union(&new_elem.lookahead).cloned().collect();
+                        let new_elem = new_state
+                            .iter()
+                            .find(|new_elem| element.to_lr0() == new_elem.to_lr0())
+                            .expect("Has to be in there");
+                        element.lookahead = element
+                            .lookahead
+                            .union(&new_elem.lookahead)
+                            .cloned()
+                            .collect();
                         new_elements.insert(element);
                     }
                     *new_state = new_elements;
@@ -213,7 +225,7 @@ impl Lr1Automaton {
                 }
             }
             new_states.push(state);
-            state_mapping.push(new_states.len()-1);
+            state_mapping.push(new_states.len() - 1);
         }
 
         let mut new_transitions = vec![];
@@ -225,14 +237,22 @@ impl Lr1Automaton {
             }
         }
 
-        Self { rules: self.rules, states: new_states, transitions: new_transitions, first_sets: HashMap::new(), num_terminal: self.num_terminal, num_nonterminal: self.num_nonterminal }
+        Self {
+            rules: self.rules,
+            states: new_states,
+            transitions: new_transitions,
+            first_sets: HashMap::new(),
+            num_terminal: self.num_terminal,
+            num_nonterminal: self.num_nonterminal,
+        }
     }
 
     /// Returns (action, jump)
-    /// 
+    ///
     /// action is state num primary, symbol secondary
-    /// 
+    ///
     /// jump is metasymbol num primary, state secondary
+    #[allow(clippy::type_complexity)]
     pub fn generate_tables(&self) -> (Vec<HashMap<Terminal, Action>>, Vec<HashMap<usize, usize>>) {
         let mut action = vec![];
         let mut jump = vec![HashMap::new(); self.num_nonterminal];
@@ -243,16 +263,23 @@ impl Lr1Automaton {
                 if transition.from == i {
                     match &transition.symbol {
                         Symbol::Terminal(symbol) => {
-                            if action_row.insert(symbol.clone(), Action::Shift(transition.to)).is_some() {
-                                eprintln!("######## Conflict ########");
+                            if action_row
+                                .insert(symbol.clone(), Action::Shift(transition.to))
+                                .is_some()
+                            {
+                                unreachable!("Multiple instances of same transition");
                             }
                         }
                         Symbol::NonTerminal(MetaSymbol::Normal(symbol)) => {
                             if jump[*symbol].insert(i, transition.to).is_some() {
-                                eprintln!("######## Conflict ########");
+                                unreachable!("Multiple instances of same transition");
                             }
                         }
-                        _ => {unreachable!("The automaton shouldn't be able to contain these as transitions")}
+                        Symbol::NonTerminal(MetaSymbol::Start) => {
+                            unreachable!(
+                                "The automaton shouldn't be able to contain these as transitions"
+                            )
+                        }
                     }
                 }
             }
@@ -261,13 +288,41 @@ impl Lr1Automaton {
                 if element.pos == element.rule.parts.len() {
                     for symbol in &element.lookahead {
                         if element.rule.result == MetaSymbol::Start && *symbol == Terminal::Eof {
-                            if action_row.insert(Terminal::Eof, Action::Accept).is_some() {
-                                eprintln!("######## Conflict ########");
+                            if let Some(prev) = action_row.insert(Terminal::Eof, Action::Accept) {
+                                match prev {
+                                    Action::Shift(_) => {
+                                        eprintln!("######## Conflict (s/a) ({:?})", element.rule);
+                                    }
+                                    Action::Reduce(rule) => eprintln!(
+                                        "######## Conflict (r/a) ({:?}\t{:?})",
+                                        self.rules[rule], element.rule
+                                    ),
+                                    Action::Accept => {
+                                        eprintln!("######## Conflict (a/a) ({:?})", element.rule);
+                                    }
+                                }
                             }
                         } else {
-                            let rule_i = self.rules.iter().position(|rule| Rc::ptr_eq(rule, &element.rule)).expect("Must contain rule");
-                            if action_row.insert(symbol.clone(), Action::Reduce(rule_i)).is_some() {
-                                eprintln!("######## Conflict ########");
+                            let rule_i = self
+                                .rules
+                                .iter()
+                                .position(|rule| Rc::ptr_eq(rule, &element.rule))
+                                .expect("Must contain rule");
+                            if let Some(prev) =
+                                action_row.insert(symbol.clone(), Action::Reduce(rule_i))
+                            {
+                                match prev {
+                                    Action::Shift(_) => {
+                                        eprintln!("######## Conflict (s/r) ({:?})", element.rule);
+                                    }
+                                    Action::Reduce(rule) => eprintln!(
+                                        "######## Conflict (r/r) ({:?}\t{:?})",
+                                        self.rules[rule], element.rule
+                                    ),
+                                    Action::Accept => {
+                                        eprintln!("######## Conflict (a/r) ({:?})", element.rule);
+                                    }
+                                }
                             }
                         }
                     }
